@@ -16,8 +16,27 @@ them and never runs shell commands from transcripts.
 pip install -e ".[test]"
 global-api init                    # creates wrapper.config.json + random apiKey
 global-api doctor                  # resolve CLI executables, no model calls
-global-api serve                   # http://127.0.0.1:8787/v1
+global-api serve                   # picker: list a client, type a model id
 ```
+
+`serve` opens an interactive picker: choose the client from a numbered
+list, then enter the upstream model id (a numbered known-model list is
+shown for omnirush/opencode, or type any id — e.g. `provider/model` for
+opencode). The selection is in-memory only; config files are never
+modified. Non-interactive equivalent:
+
+```bash
+global-api serve --provider opencode --model opencode/mymodel --alias myalias
+global-api chat --provider opencode --model opencode/mymodel "Say hi"
+```
+
+Mid-session switching (no restart, no file edits):
+
+- Server console: type `menu` + Enter, pick a new client, enter a new
+  model id (`--no-menu` disables this; piping stdin disables it too).
+- HTTP admin API (same Bearer key): `GET /v1/session`,
+  `POST /v1/session/switch {"provider": "...", "model": "..."}`.
+- In-flight requests finish on the old mapping; new requests use the new one.
 
 Authenticate every request with the configured key:
 
@@ -37,6 +56,11 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 - `GET /health` — liveness, no auth.
 - `GET /v1/models` — enabled model aliases, Bearer auth.
+  Dynamic mode exposes exactly one alias (`<provider>-<model slug>` unless
+  `--alias` overrides); the response includes `upstream_model`.
+- `GET /v1/session` — current in-memory selection, Bearer auth.
+- `POST /v1/session/switch` — `{"provider","model","alias?"}` switches the
+  served client/model mid-session without touching files, Bearer auth.
 - `POST /v1/chat/completions` — OpenAI Chat Completions subset, Bearer auth.
   Supports `stream: true` (SSE), `tools` + `tool_choice`, and
   `stream_options: {"include_usage": true}`. Only text content is

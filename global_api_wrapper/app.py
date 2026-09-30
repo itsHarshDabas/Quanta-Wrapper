@@ -75,6 +75,8 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
     stopping = False
     key_hash = hashlib.sha256(config.server.api_key.encode()).digest()
     models = {m.id: m for m in config.exposed_models()}
+    state_lock = asyncio.Lock()
+    app_state_label = getattr(config, "dynamic_label", None) or "config file"
 
     @asynccontextmanager
     async def lifespan(app):
@@ -86,6 +88,24 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
     app = FastAPI(title="Global API Wrapper", version="0.2.0", lifespan=lifespan,
                   description="OpenAI Chat Completions over local AI CLIs. Tool calls are validated structured-output requests executed by the client (e.g. Hermes), never by the wrapper. This is a prompt bridge, not native provider function calling.")
     app.state.config = config
+    app.state.dynamic_label = app_state_label
+
+    def apply_dynamic_model(validated, alias_id: str) -> None:
+        """Swap the served config in place (mid-session menu / admin API).
+
+        In-flight requests keep their already-resolved provider/model; only
+        new requests use the new map. Capacity counters are reset so a stuck
+        busy count from the old provider cannot wedge the new one.
+        """
+        nonlocal total
+        models.clear()
+        models.update({m.id: m for m in validated.exposed_models()})
+        app.state.config = validated
+        app.state.dynamic_label = alias_id
+        total = 0
+        active.clear()
+
+    app.state.apply_dynamic_model = apply_dynamic_model
 
     @app.exception_handler(ApiError)
     async def api_error(request, error):
@@ -137,7 +157,52 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
 
     @app.get("/v1/models", dependencies=[Depends(authorize)], tags=["OpenAI"])
     async def list_models():
-        return {"object": "list", "data": [{"id": m.id, "object": "model", "created": 0, "owned_by": m.provider} for m in models.values()]}
+        data = [{"id": m.id, "object": "model", "created": 0, "owned_by": m.provider,
+                 **({"upstream_model": m.upstream_model} if m.upstream_model else {})}
+                for m in models.values()]
+        return {"object": "list", "data": data}
+
+    @app.get("/v1/session", dependencies=[Depends(authorize)], tags=["Service"])
+    async def session_info():
+        """Current in-memory selection: alias, provider, upstream model id."""
+        current = [{"id": m.id, "provider": m.provider, "upstream_model": m.upstream_model}
+                   for m in models.values()]
+        return {"object": "session", "serving": app.state.dynamic_label, "models": current}
+
+    @app.post("/v1/session/switch", dependencies=[Depends(authorize)], tags=["Service"])
+    async def session_switch(request: Request):
+        """Switch provider/model mid-session without touching config files.
+
+        Body: {"provider": "<name>", "model": "<upstream-id>", "alias": "<optional>"}.
+        In-flight requests finish on the old mapping; new requests use the new
+        one. Same Bearer key required.
+        """
+        from .picker import compose_dynamic_model
+
+        try:
+            body = await _body(request, 65536)
+        except ApiError as error:
+            raise error
+        if not isinstance(body, dict):
+            raise ApiError(400, "invalid_body", "Body must be a JSON object.")
+        provider_name = body.get("provider")
+        upstream = body.get("model")
+        alias = body.get("alias")
+        if not isinstance(provider_name, str) or not isinstance(upstream, str):
+            raise ApiError(400, "invalid_request", "Fields 'provider' (string) and 'model' (string) are required.")
+        if alias is not None and not isinstance(alias, str):
+            raise ApiError(400, "invalid_request", "Field 'alias' must be a string.")
+        base_config = app.state.config
+        try:
+            async with state_lock:
+                validated, alias_id = compose_dynamic_model(base_config, provider_name=provider_name,
+                                                            upstream=upstream, alias=alias)
+                apply_dynamic_model(validated, alias_id)
+        except ValueError as error:
+            raise ApiError(400, "invalid_request", str(error)) from None
+        log.info("session switch: provider=%s alias=%s upstream=%s", provider_name, alias_id, upstream)
+        return {"object": "session", "serving": alias_id, "provider": provider_name,
+                "upstream_model": upstream.strip(), "models": [{"id": alias_id}]}
 
     request_schema = {
         "requestBody": {"required": True, "content": {"application/json": {"schema": {
@@ -158,17 +223,19 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         uploads += 1
         try:
             try:
-                body = validate_request(await _body(request, config.server.max_body_bytes))
+                snapshot = app.state.config
+                body = validate_request(await _body(request, snapshot.server.max_body_bytes))
             except ProtocolError as error:
                 raise ApiError(400, error.code, str(error), error.param) from None
             model = models.get(body["model"])
             if not model:
                 raise ApiError(404, "model_not_found", "Unknown or disabled model; use GET /v1/models.", "model")
-            provider = config.providers[model.provider]
-            if total >= config.server.max_concurrent or active.get(model.provider, 0) >= provider.max_concurrent:
-                raise ApiError(429, "provider_busy", "CLI capacity is busy. Retry later.")
-            total += 1
-            active[model.provider] = active.get(model.provider, 0) + 1
+            provider = snapshot.providers[model.provider]
+            async with state_lock:
+                if total >= snapshot.server.max_concurrent or active.get(model.provider, 0) >= provider.max_concurrent:
+                    raise ApiError(429, "provider_busy", "CLI capacity is busy. Retry later.")
+                total += 1
+                active[model.provider] = active.get(model.provider, 0) + 1
         finally:
             uploads -= 1
 
@@ -195,7 +262,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         async def generate():
             try:
                 result = await runner(provider, model, format_prompt(body), on_text=text_delta,
-                                      secret_env=config.server.api_key_env)
+                                      secret_env=snapshot.server.api_key_env)
                 try:
                     parsed = parse_response(result.text, body)
                 except ProtocolError as error:
