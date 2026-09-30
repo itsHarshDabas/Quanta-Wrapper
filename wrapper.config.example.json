@@ -1,0 +1,66 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "apiKeyEnv": "GLOBAL_API_KEY",
+    "maxBodyBytes": 1048576,
+    "maxConcurrent": 4,
+    "corsOrigins": []
+  },
+  "defaults": {
+    "timeoutMs": 180000,
+    "maxOutputBytes": 8388608,
+    "maxConcurrent": 1,
+    "workspace": "./workspace"
+  },
+  "providers": {
+    "omnirush": {
+      "adapter": "omnirush",
+      "enabled": true,
+      "command": "omnirush"
+    },
+    "opencode": {
+      "adapter": "opencode",
+      "enabled": false,
+      "command": "opencode"
+    },
+    "cline": {
+      "adapter": "cline",
+      "enabled": false,
+      "command": "cline"
+    },
+    "antigravity": {
+      "adapter": "antigravity",
+      "enabled": false,
+      "command": "agy",
+      "acknowledgeAgentRisk": false
+    },
+    "freebuff": {
+      "adapter": "freebuff",
+      "enabled": false,
+      "command": "freebuff"
+    }
+  },
+  "models": [
+    {
+      "id": "omnirush",
+      "provider": "omnirush"
+    },
+    {
+      "id": "opencode",
+      "provider": "opencode"
+    },
+    {
+      "id": "cline",
+      "provider": "cline"
+    },
+    {
+      "id": "antigravity",
+      "provider": "antigravity"
+    },
+    {
+      "id": "freebuff",
+      "provider": "freebuff"
+    }
+  ]
+}

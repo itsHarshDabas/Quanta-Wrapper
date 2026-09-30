@@ -1,0 +1,22 @@
+# Private local configuration and CLI workspaces
+wrapper.config.json
+.env
+.env.*
+!.env.example
+workspace/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
