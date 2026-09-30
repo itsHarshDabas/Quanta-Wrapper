@@ -148,9 +148,27 @@ class DecoderTests(unittest.TestCase):
         with self.assertRaises(ApiError):
             self.decode("omnirush", [{"type": "message_end", "message": {"role": "assistant", "stopReason": "error"}}])
 
-    def test_opencode_filters_tool_events(self):
-        d = self.decode("opencode", [{"type": "tool_use", "part": {"text": "SECRET"}}, {"type": "text", "part": {"text": "hello"}}, {"type": "step_finish"}])
-        self.assertEqual(d.text, "hello")
+    def test_opencode_adapter_is_plain_text_over_stdin(self):
+        invocation = build_invocation(Provider(adapter="opencode", command="opencode"),
+                                      ModelAlias(id="t", provider="p", upstream_model="opencode/free-model"),
+                                      "PROMPT", "state")
+        # Plain `run --pure`: prompt goes over stdin, no JSON envelope, no
+        # OPENCODE_CONFIG_CONTENT (opencode 1.18+ treats that as outside
+        # OpenCode and 403s the free tier) and no custom --agent.
+        self.assertEqual(invocation.stdin, "PROMPT")
+        self.assertIn("--pure", invocation.args)
+        self.assertNotIn("--format", invocation.args)
+        self.assertNotIn("--agent", invocation.args)
+        self.assertNotIn("PROMPT", invocation.args)
+        self.assertIn("--model", invocation.args)
+        self.assertEqual(invocation.env, {})
+
+    def test_opencode_plain_text_decoder(self):
+        decoder = Decoder("text")
+        decoder.feed("hello")
+        decoder.feed(" world")
+        decoder.finish()
+        self.assertEqual(decoder.text, "hello world")
 
     def test_cline_authoritative_result_and_legacy_snapshots(self):
         d = self.decode("cline", [{"type": "agent_event", "event": {"text": "narration"}}, {"type": "run_result", "finishReason": "completed", "text": "answer"}])
@@ -170,7 +188,7 @@ class DecoderTests(unittest.TestCase):
         with self.assertRaises(ApiError):
             self.decode("jsonl", [{"type": "text", "text": "partial"}])
         with self.assertRaises(ApiError):
-            Decoder("opencode").feed("not JSON\n")
+            Decoder("jsonl").feed("not JSON\n")
 
 
 class ConfigurationTests(unittest.TestCase):

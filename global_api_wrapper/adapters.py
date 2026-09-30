@@ -24,12 +24,8 @@ def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_d
                            "--system-prompt", "You are a helpful text-only assistant.", "--append-system-prompt", "",
                            *provider_args, *model_args], prompt, {"OMNIRUSH_OFFLINE": "1"})
     if provider.adapter == "opencode":
-        policy = {"share": "disabled", "permission": {"*": "deny"}, "agent": {
-            "global-api-chat": {"description": "Text-only API assistant", "mode": "primary", "permission": {"*": "deny"}}
-        }}
-        return Invocation(["run", *extra, "--pure", "--format", "json", "--dir", provider.workspace,
-                           "--agent", "global-api-chat", *model_args], prompt,
-                          {"OPENCODE_CONFIG_CONTENT": json.dumps(policy)})
+        return Invocation(["run", *extra, "--pure", "--dir", provider.workspace,
+                           *model_args], prompt)
     if provider.adapter == "cline":
         return Invocation([*extra, "--json", "--plan", "--auto-approve", "false", "--data-dir", state_dir,
                            "--timeout", str(max(1, (provider.timeout_ms + 999) // 1000)), *provider_args, *model_args], prompt,
@@ -112,13 +108,6 @@ class Decoder:
                 u = message.get("usage", {})
                 self._usage(u.get("input", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0), u.get("output"))
             if kind == "agent_end":
-                self.completed = True
-            if kind == "error":
-                raise _upstream_error()
-        elif self.mode == "opencode":
-            if kind == "text":
-                self._add(event["part"]["text"])
-            if kind == "step_finish":
                 self.completed = True
             if kind == "error":
                 raise _upstream_error()

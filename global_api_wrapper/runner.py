@@ -82,7 +82,10 @@ async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
         args = [resolved.executable, *resolved.prefix, *invocation.args]
         if os.name == "nt" and len(subprocess.list2cmdline(args)) > 30000:
             raise ApiError(413, "prompt_too_large", "Windows command-line length exceeded; use a stdin-based custom bridge.")
-        decoder = Decoder(provider.output_mode if provider.adapter == "custom" else provider.adapter)
+        decoder_mode = provider.output_mode if provider.adapter == "custom" else provider.adapter
+        if decoder_mode == "opencode":
+            decoder_mode = "text"
+        decoder = Decoder(decoder_mode)
         byte_count = 0
 
         def count(chunk):
