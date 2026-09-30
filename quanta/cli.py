@@ -39,7 +39,8 @@ def main():
         if name in ("serve", "ui"):
             command.add_argument("--ui-port", type=int, default=8788, help="Port for the web UI (default 8788)")
         if name == "serve":
-            command.add_argument("--ui", action="store_true", help="Also serve the web UI on --ui-port")
+            command.add_argument("--ui", action="store_true", help=argparse.SUPPRESS)  # UI is on by default
+            command.add_argument("--no-ui", action="store_true", help="Do not serve the web UI")
             command.add_argument("--mode", choices=("cli", "gui"), help="Skip the startup menu: cli = terminal setup, gui = open the browser UI")
             command.add_argument("--no-browser", action="store_true", help="With gui mode, print the UI address instead of opening a browser")
         if name == "chat":
@@ -123,7 +124,6 @@ def main():
         if mode == "gui":
             print("GUI mode: serving the configuration file; choose providers and models in the browser.")
             selected = config
-            args.ui = True
         elif mode is None:
             print("Non-interactive stdin: using config-file models (no picker).")
             print("Tip: `quanta serve --mode gui`, or `--provider <name> --model <upstream-id>`.")
@@ -145,27 +145,36 @@ def main():
             menu.start()
         else:
             print("Mid-session menu disabled; use the admin API: POST /v1/session/switch.")
-        if args.ui:
+        if not args.no_ui:
             from .uiserver import Handoff, start_ui_thread
             handoff = Handoff(selected.server.api_key) if mode == "gui" and not args.no_browser else None
-            ui_origin = f"http://127.0.0.1:{args.ui_port}"
-            # In-memory only: let the bundled UI call the API without editing the config file.
-            for origin in (ui_origin, f"http://localhost:{args.ui_port}"):
-                if origin not in config.server.cors_origins:
-                    config.server.cors_origins.append(origin)
-            try:
-                start_ui_thread(f"http://{selected.server.host}:{selected.server.port}", port=args.ui_port, handoff=handoff)
-            except OSError as error:
-                raise ValueError(f"Cannot start the UI on port {args.ui_port}: {error}") from None
-            print(f"Quanta UI:  {ui_origin}")
-            if handoff is not None:
-                import threading
-                import webbrowser
-                # Only a one-time nonce is put in the URL (fragment: not sent to the server, not logged);
-                # the page exchanges it for the key over loopback. The key is never a URL or argv item.
-                url = f"{ui_origin}/#h={handoff.issue()}"
-                threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-                print("Opening your browser…")
+            ui_origin = None
+            api_base = f"http://{selected.server.host}:{selected.server.port}"
+            for port in range(args.ui_port, args.ui_port + 10):  # first free port
+                try:
+                    start_ui_thread(api_base, port=port, handoff=handoff)
+                    ui_origin = f"http://127.0.0.1:{port}"
+                    break
+                except OSError:
+                    continue
+            if ui_origin is None:
+                print(f"Web UI disabled: ports {args.ui_port}-{args.ui_port + 9} are busy.")
+            else:
+                # In-memory only: let the bundled UI call the API without editing the config file.
+                # `selected` is a separate copy in CLI mode, and it is the one the server enforces.
+                for origin in (ui_origin, ui_origin.replace("127.0.0.1", "localhost")):
+                    for target in (config, selected):
+                        if origin not in target.server.cors_origins:
+                            target.server.cors_origins.append(origin)
+                print(f"Web UI:     {ui_origin}  (paste your API key there once)")
+                if handoff is not None:
+                    import threading
+                    import webbrowser
+                    # Only a one-time nonce is put in the URL (fragment: not sent to the server, not logged);
+                    # the page exchanges it for the key over loopback. The key is never a URL or argv item.
+                    url = f"{ui_origin}/#h={handoff.issue()}"
+                    threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+                    print("Opening your browser…")
         print(f"Quanta API: http://{selected.server.host}:{selected.server.port}/v1")
         print(f"Swagger docs: http://{selected.server.host}:{selected.server.port}/docs")
         print("Bearer authentication is required. API key is not logged.")

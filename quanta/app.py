@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Configuration
+from .anthropic import AnthropicRequestError, error_body, estimate_tokens, from_openai, stream_from_openai, to_openai
 from .errors import ApiError
 from .protocol import ProtocolError, bridge_enabled, format_prompt, parse_response, validate_request
 from .runner import RunResult, run_cli
@@ -161,12 +162,16 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
             response.headers["Vary"] = "Origin"
         return response
 
-    async def authorize(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(auth_scheme)]):
-        supplied = hashlib.sha256((credentials.credentials if credentials else "").encode()).digest()
-        if not credentials or not hmac.compare_digest(key_hash, supplied):
+    def check_key(token: str):
+        supplied = hashlib.sha256(token.encode()).digest()
+        if not token or not hmac.compare_digest(key_hash, supplied):
             raise ApiError(401, "invalid_api_key", "A valid Bearer API key is required.")
         if stopping:
             raise ApiError(503, "server_stopping", "Server is shutting down.")
+
+    async def authorize(request: Request, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(auth_scheme)]):
+        # Bearer for OpenAI clients; x-api-key for Anthropic clients (Claude Code).
+        check_key(credentials.credentials if credentials else request.headers.get("x-api-key", ""))
 
     @app.get("/health", tags=["Service"])
     async def health():
@@ -213,7 +218,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
     model_cache: dict[str, tuple[float, list[str]]] = {}
 
     @app.get("/v1/providers/{name}/models", dependencies=[Depends(authorize)], tags=["Service"])
-    async def provider_models(name: str):
+    async def provider_models(name: str, q: str = "", limit: int = 0):
         """Upstream model ids the provider's CLI reports (cached 60s; empty when the CLI cannot list them)."""
         from .config import BRIDGE_NOTES
         from .picker import _provider_models
@@ -226,8 +231,13 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         if not cached or now - cached[0] > 60:
             listed = await asyncio.to_thread(_provider_models, provider.adapter)
             model_cache[name] = cached = (now, listed)
+        from .picker import filter_models
+
+        matches = filter_models(cached[1], q) if q.strip() else cached[1]
+        page = matches[:limit] if limit > 0 else matches
         return {"object": "list", "provider": name, "listable": provider.adapter in ("omnirush", "opencode", "antigravity"),
-                "data": [{"id": m, "object": "model", "owned_by": name} for m in cached[1]]}
+                "total": len(cached[1]), "matched": len(matches),
+                "data": [{"id": m, "object": "model", "owned_by": name} for m in page]}
 
     @app.get("/v1/requests", dependencies=[Depends(authorize)], tags=["Service"])
     async def recent_requests():
@@ -249,10 +259,12 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
 
     @app.get("/v1/models", dependencies=[Depends(authorize)], tags=["OpenAI"])
     async def list_models():
-        data = [{"id": m.id, "object": "model", "created": 0, "owned_by": m.provider,
+        data = [{"id": m.id, "object": "model", "type": "model", "display_name": m.id, "created": 0,
+                 "created_at": "1970-01-01T00:00:00Z", "owned_by": m.provider,
                  **({"upstream_model": m.upstream_model} if m.upstream_model else {})}
                 for m in models.values()]
-        return {"object": "list", "data": data}
+        return {"object": "list", "data": data, "has_more": False,
+                "first_id": data[0]["id"] if data else None, "last_id": data[-1]["id"] if data else None}
 
     @app.get("/v1/session", dependencies=[Depends(authorize)], tags=["Service"])
     async def session_info():
@@ -307,8 +319,8 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
             }}, "example": {"model": "omnirush", "messages": [{"role": "user", "content": "Hello"}]}}}}
     }
 
-    @app.post("/v1/chat/completions", dependencies=[Depends(authorize)], tags=["OpenAI"], openapi_extra=request_schema)
-    async def completions(request: Request):
+    async def chat(request: Request, prebuilt: dict | None = None):
+        """Shared core for the OpenAI and Anthropic endpoints; ``prebuilt`` is an OpenAI-shaped body."""
         nonlocal total, uploads
         if uploads >= config.server.max_concurrent * 4:
             raise ApiError(429, "server_busy", "Too many pending requests. Retry later.")
@@ -316,7 +328,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         try:
             try:
                 snapshot = app.state.config
-                body = validate_request(await _body(request, snapshot.server.max_body_bytes))
+                body = validate_request(prebuilt if prebuilt is not None else await _body(request, snapshot.server.max_body_bytes))
             except ProtocolError as error:
                 raise ApiError(400, error.code, str(error), error.param) from None
             model, provider = resolve_model(body["model"])
@@ -462,5 +474,71 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
 
         headers.update({"X-Accel-Buffering": "no", "Cache-Control": "no-cache, no-transform"})
         return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
+
+    @app.post("/v1/chat/completions", dependencies=[Depends(authorize)], tags=["OpenAI"], openapi_extra=request_schema)
+    async def completions(request: Request):
+        return await chat(request)
+
+    # ---- Anthropic Messages API (Claude Code) -------------------------------------------
+    def anthropic_error(error: ApiError):
+        headers = {"retry-after": "2"} if error.status == 429 else {}
+        return JSONResponse(error_body(error.status, error.message), status_code=error.status, headers=headers)
+
+    async def anthropic_guard(request: Request):
+        token = request.headers.get("x-api-key", "")
+        auth = request.headers.get("authorization", "")
+        if not token and auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+        check_key(token)
+
+    def input_estimate(raw: dict) -> int:
+        return estimate_tokens([raw.get("system") or "", raw.get("messages") or [], raw.get("tools") or []])
+
+    @app.post("/v1/messages", tags=["Anthropic"])
+    async def anthropic_messages(request: Request):
+        """Anthropic Messages API over the same CLI core. Tool use is proposed through the client-side bridge."""
+        try:
+            await anthropic_guard(request)
+            raw = await _body(request, app.state.config.server.max_body_bytes)
+            try:
+                body = to_openai(raw)
+            except AnthropicRequestError as error:
+                raise ApiError(400, "invalid_request", str(error)) from None
+            requested = body["model"]
+            # Claude Code asks for claude-* model names; route those to the first served alias.
+            if not resolve_model(requested)[0] and requested.lower().startswith("claude") and models:
+                body["model"] = next(iter(models))
+            estimate = input_estimate(raw)
+            response = await chat(request, body)
+        except ApiError as error:
+            return anthropic_error(error)
+        headers = {"X-Quanta-Tool-Mode": "prompt-bridge", "X-Quanta-Routed-Model": body["model"]}
+        if isinstance(response, StreamingResponse):
+            inner = response.body_iterator
+
+            async def frames():
+                try:
+                    async for frame in stream_from_openai(inner, requested, estimate):
+                        yield frame
+                finally:
+                    close = getattr(inner, "aclose", None)
+                    if close is not None:
+                        await close()
+
+            headers.update({"X-Accel-Buffering": "no", "Cache-Control": "no-cache, no-transform"})
+            return StreamingResponse(frames(), media_type="text/event-stream", headers=headers)
+        return JSONResponse(from_openai(json.loads(response.body), requested, estimate), headers=headers)
+
+    @app.post("/v1/messages/count_tokens", tags=["Anthropic"])
+    async def anthropic_count_tokens(request: Request):
+        """Estimate only (~4 chars/token): the CLIs do not expose a tokenizer."""
+        try:
+            await anthropic_guard(request)
+            raw = await _body(request, app.state.config.server.max_body_bytes)
+        except ApiError as error:
+            return anthropic_error(error)
+        if not isinstance(raw, dict):
+            return anthropic_error(ApiError(400, "invalid_request", "Request body must be a JSON object."))
+        return JSONResponse({"input_tokens": input_estimate(raw)}, headers={"X-Quanta-Token-Count": "estimate"})
 
     return app

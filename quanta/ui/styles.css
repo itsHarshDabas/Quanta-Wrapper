@@ -216,3 +216,16 @@ td.mono { font-family: var(--mono); font-size: 14px; font-weight: 400; letter-sp
   .hero-actions .btn, .composer-actions .btn { width: 100%; }
   .footer { flex-direction: column; align-items: flex-start; }
 }
+
+.banner { display: grid; gap: 12px; }
+.banner-form { display: flex; gap: 12px; flex-wrap: wrap; }
+.banner-form input { flex: 1 1 260px; }
+.banner .btn { font-size: 16px; min-height: 40px; padding: 6px 16px 8px; justify-self: start; }
+
+/* searchable model box */
+.combo { position: relative; }
+.combo-list { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 6px; list-style: none; max-height: 340px; overflow-y: auto; background: var(--canvas); border-radius: var(--r-md); box-shadow: 0 4px 16px rgba(0,0,0,0.06), inset 0 0 0 1px var(--hairline); }
+.combo-list li { padding: 8px 10px; border-radius: var(--r-sm); font-family: var(--mono); font-size: 14px; font-weight: 400; letter-spacing: 0; cursor: pointer; overflow-wrap: anywhere; }
+.combo-list li.active, .combo-list li[role=option]:hover { background: var(--block-lime); }
+.combo-list .combo-status { cursor: default; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; padding: 8px 10px 10px; }
+.combo-list mark { background: var(--block-lilac); color: var(--ink); border-radius: 2px; }

@@ -91,6 +91,15 @@ the API key (0600 on init).
   rejected. The tool bridge is a structured-output prompt protocol —
   disable native CLI tools/permissions separately.
 
+## Finding a model in a long list
+
+OpenCode alone lists 450+ models. Everywhere a model is chosen you can search instead of scrolling:
+
+- **CLI picker / `menu`:** type part of a name (`gpt 5`, `free`, `nemotron`). Every word must match, case-insensitive.
+  Pick by number, or a single match is selected for you. Text that matches nothing can be used as a custom id after a `y`.
+- **Web UI:** the model box is a searchable dropdown (arrow keys + Enter, or click) in the Playground and the server-default form.
+- **API:** `GET /v1/providers/{name}/models?q=gpt%205&limit=20` returns `total` and `matched` counts.
+
 ## Switching CLI and model inside one conversation
 
 The API is stateless: the client resends the conversation each turn, so history
@@ -141,6 +150,30 @@ model:
   default: opencode
   api_mode: chat_completions
 ```
+
+## Claude Code
+
+Quanta also speaks the Anthropic Messages API (`POST /v1/messages`, `POST /v1/messages/count_tokens`;
+auth via `x-api-key` or Bearer), so Claude Code can use any enabled CLI as its model. PowerShell:
+
+```powershell
+$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8787"          # no /v1 suffix
+$env:ANTHROPIC_AUTH_TOKEN = "<server.apiKey>"
+$env:ANTHROPIC_MODEL = "opencode:opencode/big-pickle"       # or a served alias
+$env:ANTHROPIC_SMALL_FAST_MODEL = $env:ANTHROPIC_MODEL
+$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+claude
+```
+
+- Any `claude-*` model name (what Claude Code asks for by default) is routed to the first served alias;
+  the response echoes the requested name.
+- Claude Code executes its own tools (Bash, Edit, ...). The CLI model proposes calls through the
+  client-side bridge; Quanta runs nothing. Reliability depends on the model following the envelope.
+- `count_tokens` is an estimate (about 4 characters per token); CLIs expose no tokenizer.
+- Prefer stdin-based providers (OpenCode, Antigravity, OmniRush): Claude Code prompts are large and
+  Cline receives its prompt as a command-line argument (Windows limit ~30 000 characters).
+- Raise `server.maxBodyBytes` (up to 16 MB) for long sessions; images/documents are not supported.
+- Claude Code may print "unrecognized model" and "auto mode" notices for a non-Anthropic gateway; they are harmless.
 
 ## Windows notes
 

@@ -50,6 +50,11 @@ class StartupMenuTests(unittest.TestCase):
         calls = self.run_serve([], inputs=["1"])
         self.assertEqual(calls["picked"], 1)
         self.assertEqual(calls["open"], [])
+        self.assertEqual(len(calls["ui"]), 1)  # the UI is always served...
+        self.assertIsNone(calls["ui"][0]["handoff"])  # ...but no browser/auto-login in CLI mode
+
+    def test_no_ui_flag_disables_ui(self):
+        calls = self.run_serve(["--mode", "cli", "--no-ui", "--provider", "opencode", "--model", "x"])
         self.assertEqual(calls["ui"], [])
 
     def test_no_browser_flag_prints_instead_of_opening(self):
@@ -64,6 +69,29 @@ class StartupMenuTests(unittest.TestCase):
     def test_non_interactive_skips_menu(self):
         calls = self.run_serve([], interactive=False)
         self.assertEqual((calls["picked"], calls["open"], calls["run"]), (0, [], 1))
+
+
+class CorsForUiTests(unittest.TestCase):
+    def test_cli_mode_copy_of_config_also_allows_the_ui_origin(self):
+        """Regression: CLI mode serves a copied config; the UI origin must be allowed on that copy."""
+        import copy
+
+        raw = example_config()
+        raw["server"]["apiKey"] = "test-" + "k" * 24
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "q.json")
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            real_create_app = cli_create_app()
+            with patch.object(sys, "argv", ["quanta", "serve", "-c", str(path), "--mode", "cli", "--provider", "opencode", "--model", "x"]),                     patch("quanta.cli.stdin_is_interactive", return_value=False),                     patch("uvicorn.run"), patch("quanta.menu.SessionMenu.start"),                     patch("quanta.uiserver.start_ui_thread"),                     patch("quanta.picker.interactive_serve_selection", side_effect=lambda cfg, **k: copy.deepcopy(cfg)),                     patch("quanta.app.create_app", side_effect=lambda cfg, **k: (captured.setdefault("served", cfg), real_create_app(cfg, **k))[1]):
+                cli.main()
+        self.assertIn("http://127.0.0.1:8788", captured["served"].server.cors_origins)
+        self.assertIn("http://localhost:8788", captured["served"].server.cors_origins)
+
+
+def cli_create_app():
+    from quanta.app import create_app
+    return create_app
 
 
 class HandoffTests(unittest.TestCase):

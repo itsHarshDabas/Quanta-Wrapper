@@ -58,7 +58,7 @@ async function api(path, opts = {}) {
     res = await fetch(state.api + path, { method: opts.method || "GET", headers, body: opts.body, signal: opts.signal });
   } catch (error) {
     if (error.name === "AbortError") throw error;
-    throw new ApiFailure(0, { error: { message: "Cannot reach the gateway. Is `quanta serve` running, and is this origin in server.corsOrigins?", code: "unreachable" } });
+    throw new ApiFailure(0, { error: { message: `Cannot reach the API at ${state.api}. Start it with \`quanta serve\`; if it is running, this page's origin (${location.origin}) must be in server.corsOrigins.`, code: "unreachable" } });
   }
   if (opts.raw) return res;
   const data = await res.json().catch(() => ({}));
@@ -84,14 +84,14 @@ async function connect() {
   if (!state.key) { setConn("idle", "Add API key"); renderProviders(); renderSnippets(); return false; }
   try {
     const [providers, config, session] = await Promise.all([api("/v1/providers"), api("/v1/config"), api("/v1/session")]);
-    state.providers = providers.data; state.config = config; state.session = session;
+    state.providers = providers.data; state.config = config; state.session = session; state.lastError = null;
     setConn("ok", `Connected · ${state.providers.filter((p) => p.enabled).length} CLIs`);
     $("key-status").textContent = "Key accepted by the gateway.";
     renderAll();
     refreshActivity();
     return true;
   } catch (error) {
-    state.providers = []; state.config = null;
+    state.providers = []; state.config = null; state.lastError = error;
     setConn("bad", error.status === 401 ? "Key rejected" : "Gateway unreachable");
     $("key-status").textContent = error.message;
     noteError("connect", error);
@@ -122,9 +122,31 @@ function renderMarquee() {
 
 function providerBanner() {
   const banner = $("providers-banner");
-  if (!state.key) { banner.hidden = false; banner.textContent = "Save your API key in the Connect section to load live provider data."; }
-  else if (!state.providers.length) { banner.hidden = false; banner.textContent = "No provider data: the gateway is unreachable or rejected the key."; }
-  else banner.hidden = true;
+  if (state.providers.length) { banner.hidden = true; return; }
+  banner.hidden = false;
+  banner.replaceChildren();
+  if (!state.key) {
+    banner.append(el("strong", { text: "Enter your API key to load providers. " }), "It is server.apiKey in quanta.config.json.");
+    const input = el("input", { type: "password", placeholder: "API key", autocomplete: "off", "aria-label": "API key" });
+    const go = el("button", { class: "btn btn-primary", type: "submit" }, "Load providers");
+    const form = el("form", { class: "banner-form" }, input, go);
+    form.addEventListener("submit", (e) => { e.preventDefault(); saveKey(input.value); });
+    banner.append(form);
+  } else {
+    banner.append(el("strong", { text: `${state.lastError ? state.lastError.message : "No provider data."} ` }));
+    const retry = el("button", { class: "btn btn-secondary", type: "button" }, "Retry");
+    retry.addEventListener("click", () => connect());
+    banner.append(retry);
+  }
+}
+
+async function saveKey(value) {
+  value = (value || "").trim();
+  if (!value) { $("key-status").textContent = "Paste a key first."; return; }
+  state.key = value; store("quanta.key", value);
+  $("key-input").value = ""; $("key-input").placeholder = "Key saved in this browser";
+  $("key-status").textContent = "Testing…";
+  await connect();
 }
 
 function renderProviders() {
@@ -194,19 +216,17 @@ async function testProvider(p, button, out) {
   } finally { button.disabled = false; refreshActivity(); }
 }
 
-async function loadModels(provider, datalist) {
+async function loadModels(provider) {
   if (!provider) return;
   if (!state.modelCache[provider]) {
     try { state.modelCache[provider] = (await api(`/v1/providers/${encodeURIComponent(provider)}/models`)).data.map((m) => m.id); }
     catch (_) { state.modelCache[provider] = []; }
   }
-  datalist.replaceChildren(el("option", { value: "default" }), ...state.modelCache[provider].slice(0, 300).map((id) => el("option", { value: id })));
 }
 
 function onProviderChange() {
   const p = $("pg-provider").value;
-  loadModels(p, $("pg-models"));
-  loadModels($("sw-provider").value, $("sw-models"));
+  loadModels(p); loadModels($("sw-provider").value);
   updateTarget();
 }
 
@@ -215,6 +235,55 @@ function target() {
   return p ? `${p}:${$("pg-model").value.trim() || "default"}` : "";
 }
 function updateTarget() { $("pg-target").textContent = target() || "—"; }
+
+
+/* ---------- searchable model box ---------- */
+const MAX_SHOWN = 60;
+function searchModels(models, query) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return models.filter((m) => terms.every((t) => m.toLowerCase().includes(t)));
+}
+
+function attachCombo(input, getModels, onPick) {
+  const list = el("ul", { class: "combo-list", role: "listbox", hidden: true });
+  input.setAttribute("role", "combobox"); input.setAttribute("aria-expanded", "false"); input.setAttribute("aria-autocomplete", "list");
+  input.parentElement.classList.add("combo"); input.parentElement.append(list);
+  let items = []; let active = -1;
+
+  function close() { list.hidden = true; input.setAttribute("aria-expanded", "false"); active = -1; }
+  function choose(value) { input.value = value; close(); onPick(value); }
+  function highlight() { [...list.children].forEach((li, i) => li.classList.toggle("active", i === active)); const cur = list.children[active]; if (cur) cur.scrollIntoView({ block: "nearest" }); }
+
+  function render() {
+    const all = getModels();
+    const query = input.value.trim();
+    const matches = query && query.toLowerCase() !== "default" ? searchModels(all, query) : all;
+    items = matches.slice(0, MAX_SHOWN); active = -1;
+    const rows = items.map((m) => {
+      const li = el("li", { role: "option" });
+      const at = query ? m.toLowerCase().indexOf(query.toLowerCase().split(/\s+/)[0]) : -1;
+      if (at >= 0) { li.append(m.slice(0, at), el("mark", { text: m.slice(at, at + query.split(/\s+/)[0].length) }), m.slice(at + query.split(/\s+/)[0].length)); }
+      else li.textContent = m;
+      li.addEventListener("mousedown", (e) => { e.preventDefault(); choose(m); });
+      return li;
+    });
+    const status = all.length ? `${matches.length} of ${all.length} models${matches.length > items.length ? ` · showing first ${items.length}, keep typing to narrow` : ""}` : "No model list from this CLI. Type any model id.";
+    const head = el("li", { class: "combo-status", "aria-hidden": "true", text: matches.length || !all.length ? status : `No match in ${all.length} models. Press Enter to use "${query}" as a custom id.` });
+    list.replaceChildren(head, ...rows);
+    list.hidden = false; input.setAttribute("aria-expanded", "true");
+    list.querySelectorAll("li[role=option]").forEach((li, i) => { li.dataset.i = i; });
+  }
+
+  input.addEventListener("focus", render);
+  input.addEventListener("input", () => { render(); onPick(input.value); });
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); if (list.hidden) render(); active = Math.min(active + 1, items.length - 1); highlight(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(active - 1, 0); highlight(); }
+    else if (e.key === "Enter" && !list.hidden) { if (active >= 0) { e.preventDefault(); choose(items[active]); } else close(); }
+    else if (e.key === "Escape") close();
+  });
+}
 
 /* ---------- playground ---------- */
 function renderThread() {
@@ -403,14 +472,7 @@ async function init() {
   $("copy-base").addEventListener("click", (e) => copyText(baseUrl(), e.currentTarget.querySelector(".copy-hint")));
   for (const b of document.querySelectorAll("[data-copy]")) b.addEventListener("click", () => copyText($(b.dataset.copy).textContent, b));
 
-  $("key-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const value = $("key-input").value.trim();
-    if (!value) { $("key-status").textContent = "Paste a key first."; return; }
-    state.key = value; store("quanta.key", value); $("key-input").value = ""; $("key-input").placeholder = "Key saved in this browser";
-    $("key-status").textContent = "Testing…";
-    await connect();
-  });
+  $("key-form").addEventListener("submit", (e) => { e.preventDefault(); saveKey($("key-input").value); });
   $("key-forget").addEventListener("click", () => {
     state.key = ""; store("quanta.key", null); state.providers = []; state.config = null; state.session = null;
     $("key-status").textContent = "Key removed from this browser."; $("key-input").placeholder = "Paste the server.apiKey from quanta.config.json";
@@ -418,7 +480,9 @@ async function init() {
   });
 
   $("pg-provider").addEventListener("change", () => { $("pg-model").value = ""; onProviderChange(); });
-  $("sw-provider").addEventListener("change", () => loadModels($("sw-provider").value, $("sw-models")));
+  $("sw-provider").addEventListener("change", () => loadModels($("sw-provider").value));
+  attachCombo($("pg-model"), () => state.modelCache[$("pg-provider").value] || [], updateTarget);
+  attachCombo($("sw-model"), () => state.modelCache[$("sw-provider").value] || [], () => {});
   $("pg-model").addEventListener("input", updateTarget);
   $("composer").addEventListener("submit", (e) => {
     e.preventDefault();

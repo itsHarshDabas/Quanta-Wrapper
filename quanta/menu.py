@@ -59,16 +59,13 @@ class SessionMenu:
         labels = [f"{n} ({self._config.providers[n].adapter}) — {resolved.get(n) or 'not found on PATH'}"
                   for n in usable]
         provider_name = usable[pick_from_list("Select a client (provider):", labels)]
+        from .picker import choose_model
+
         known = list(self._refresh_known(provider_name) if self._refresh_known else _provider_models(provider_name))
-        try:
-            upstream = input(f"Enter model id for {provider_name} (blank cancels): ").strip()
-        except EOFError:
-            raise ValueError("cancelled")
+        upstream = choose_model(provider_name, known, reader=lambda prompt: input(f"{prompt}: "))
         if not upstream:
             print("Cancelled; keeping current model.")
             return
-        if upstream.isdigit() and known and 1 <= int(upstream) <= len(known):
-            upstream = known[int(upstream) - 1]
         self.switch(provider_name, upstream)
 
     def switch(self, provider_name: str, upstream: str, alias: str | None = None) -> str:

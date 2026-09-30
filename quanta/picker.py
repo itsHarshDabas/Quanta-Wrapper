@@ -94,6 +94,54 @@ def _provider_models(provider_name: str) -> list[str]:
     return []
 
 
+def filter_models(models: list[str], query: str) -> list[str]:
+    """Case-insensitive search: every space-separated term must appear somewhere in the id."""
+    terms = query.lower().split()
+    return [m for m in models if all(term in m.lower() for term in terms)]
+
+
+def choose_model(provider_name: str, known: list[str], *, reader=None, page: int = 25) -> str:
+    """Pick a model from a long list by number, exact id, or search text.
+
+    Typing part of a name narrows the list ("gpt 5" matches every id containing both words);
+    a single match is selected automatically; text that matches nothing can still be used as a
+    custom id after confirmation. Blank input cancels (returns "").
+    """
+    reader = reader or _read_choice
+    if not known:
+        hint = ' (e.g. "provider/model" for opencode)' if provider_name == "opencode" else ""
+        return reader(f"Enter upstream model id for {provider_name}{hint}").strip()
+
+    def show(items: list[str], title: str) -> list[str]:
+        shown = items[:page]
+        print(f"\n{title}")
+        for index, item in enumerate(shown, 1):
+            print(f"  {index}. {item}")
+        if len(items) > page:
+            print(f"  ... {len(items) - page} more - type part of a name to narrow the list")
+        return shown
+
+    shown = show(known, f"{len(known)} {provider_name} models. Type part of a name to search (e.g. 'gpt 5'), a number, or a full id.")
+    for _ in range(30):
+        answer = reader("Search / number / model id (blank cancels)").strip()
+        if not answer:
+            return ""
+        if answer.isdigit() and 1 <= int(answer) <= len(shown):
+            return shown[int(answer) - 1]
+        if answer in known:
+            return answer
+        matches = filter_models(known, answer)
+        if len(matches) == 1:
+            print(f"Matched: {matches[0]}")
+            return matches[0]
+        if not matches:
+            if reader(f"No model matches {answer!r}. Use it as a custom model id? [y/N]").strip().lower() in ("y", "yes"):
+                return answer
+            continue
+        shown = show(matches, f"{len(matches)} matches for {answer!r} (search again to narrow, or pick a number):")
+    return ""
+
+
 def _suggest_model_id(provider_name: str, upstream: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", upstream).strip("-")
     candidate = f"{provider_name}-{slug}"[:200] or provider_name
@@ -159,18 +207,7 @@ def interactive_serve_selection(config, *, provider_arg: str | None = None,
 
     upstream = (model_arg or "").strip() if model_arg is not None else ""
     if not upstream and model_arg is None:
-        known = _provider_models(provider_name)
-        if known:
-            print(f"\nKnown {provider_name} models:")
-            for index, item in enumerate(known, 1):
-                print(f"  {index}. {item}")
-            print("  Or type any other model id directly.")
-            upstream = _read_choice("Enter model id (number or full id)")
-            if upstream.isdigit() and 1 <= int(upstream) <= len(known):
-                upstream = known[int(upstream) - 1]
-        else:
-            hint = ' (e.g. "provider/model" for opencode)' if provider_name == "opencode" else ""
-            upstream = _read_choice(f"Enter upstream model id for {provider_name}{hint}")
+        upstream = choose_model(provider_name, _provider_models(provider_name))
     if provider_name == "opencode" and upstream and "/" not in upstream:
         print('Note: opencode model ids are usually "provider/model" (see `opencode models`). Continuing anyway.')
     validated, alias_id = compose_dynamic_model(config, provider_name=provider_name,

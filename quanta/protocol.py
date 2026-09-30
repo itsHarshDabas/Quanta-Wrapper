@@ -13,7 +13,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-MAX_MESSAGES = 256
+MAX_MESSAGES = 1024
 MAX_TOOLS = 128
 MAX_TOOL_CALLS = 128
 MAX_JSON_ARGUMENT_BYTES = 65_536
