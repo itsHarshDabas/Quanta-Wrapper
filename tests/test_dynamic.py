@@ -7,15 +7,15 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from global_api_wrapper.app import create_app
-from global_api_wrapper.config import example_config, validate_config
-from global_api_wrapper.menu import SessionMenu
-from global_api_wrapper.picker import (
+from quanta.app import create_app
+from quanta.config import example_config, validate_config
+from quanta.menu import SessionMenu
+from quanta.picker import (
     _suggest_model_id,
     compose_dynamic_model,
     pick_from_list,
 )
-from global_api_wrapper.runner import RunResult
+from quanta.runner import RunResult
 from tests.test_app import make_app, ok_runner
 
 
@@ -52,6 +52,30 @@ class PickerTests(unittest.TestCase):
     def test_pick_from_list_repeats_until_valid(self):
         with patch("builtins.input", side_effect=["x", "0", "2"]):
             self.assertEqual(pick_from_list("Title", ["a", "b"]), 1)
+
+
+    def test_persist_selection_keeps_secrets_and_server(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from quanta.picker import persist_selection
+
+        raw = example_config()
+        raw["server"]["apiKey"] = "quanta_" + "a" * 60
+        raw["providers"]["opencode"]["args"] = ["--keep-me"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "quanta.config.json"
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            selected, _ = compose_dynamic_model(config(), provider_name="opencode",
+                                                upstream="opencode/m")
+            persist_selection(path, selected)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["server"]["apiKey"], "quanta_" + "a" * 60)
+        self.assertEqual(saved["providers"]["opencode"]["args"], ["--keep-me"])
+        self.assertTrue(saved["providers"]["opencode"]["enabled"])
+        self.assertFalse(saved["providers"]["omnirush"]["enabled"])
+        self.assertEqual(saved["models"], [{"id": "opencode-opencode-m", "provider": "opencode",
+                                            "upstreamModel": "opencode/m"}])
 
 
 class SessionSwitchTests(unittest.TestCase):

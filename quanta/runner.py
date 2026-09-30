@@ -59,15 +59,15 @@ async def terminate_tree(process: asyncio.subprocess.Process):
 
 async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
                   on_text: Callable[[str], Awaitable[None]] | None = None,
-                  secret_env: str = "GLOBAL_API_KEY") -> RunResult:
+                  secret_env: str = "QUANTA_API_KEY") -> RunResult:
     env = {**os.environ, **provider.env, "PWD": provider.workspace, "NO_COLOR": "1", "FORCE_COLOR": "0", "TERM": "dumb"}
     env.pop(secret_env, None)
     try:
         resolved = resolve_command(provider.command, env)
     except (ValueError, OSError):
-        raise ApiError(503, "cli_unavailable", "CLI executable is unavailable. Run global-api doctor on the server.") from None
+        raise ApiError(503, "cli_unavailable", "CLI executable is unavailable. Run quanta doctor on the server.") from None
     Path(provider.workspace).mkdir(parents=True, exist_ok=True)
-    state_dir = tempfile.mkdtemp(prefix="global-api-")
+    state_dir = tempfile.mkdtemp(prefix="quanta-")
     process = None
     tasks: list[asyncio.Task] = []
     try:

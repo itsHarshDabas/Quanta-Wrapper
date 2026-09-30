@@ -27,8 +27,14 @@ def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_d
         return Invocation(["run", *extra, "--pure", "--dir", provider.workspace,
                            *model_args], prompt)
     if provider.adapter == "cline":
+        # Cline CLI rejects stdin prompts in JSON mode ("JSON output mode
+        # requires a prompt argument or piped stdin"): the prompt must be a
+        # positional argument. The prompt is passed as a single argv item, so
+        # shell metacharacters are data, not interpreted. Start-up config lives
+        # in a temp dir so one run cannot leak state into another.
         return Invocation([*extra, "--json", "--plan", "--auto-approve", "false", "--data-dir", state_dir,
-                           "--timeout", str(max(1, (provider.timeout_ms + 999) // 1000)), *provider_args, *model_args], prompt,
+                           "--timeout", str(max(1, (provider.timeout_ms + 999) // 1000)),
+                           *provider_args, *model_args, prompt], "",
                           {"CLINE_SESSION_BACKEND_MODE": "local", "CLINE_TOOL_APPROVAL_MODE": "terminal",
                            "CLINE_COMMAND_PERMISSIONS": '{"deny":["*"]}'})
     if provider.adapter == "antigravity":

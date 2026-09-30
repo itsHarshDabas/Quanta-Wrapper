@@ -20,7 +20,7 @@ from .errors import ApiError
 from .protocol import ProtocolError, bridge_enabled, format_prompt, parse_response, validate_request
 from .runner import RunResult, run_cli
 
-log = logging.getLogger("global_api_wrapper")
+log = logging.getLogger("quanta")
 auth_scheme = HTTPBearer(auto_error=False)
 
 
@@ -85,7 +85,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         stopping = True
         await asyncio.gather(*(_cancel(task) for task in list(running)))
 
-    app = FastAPI(title="Global API Wrapper", version="0.2.0", lifespan=lifespan,
+    app = FastAPI(title="Quanta", version="0.3.0", lifespan=lifespan,
                   description="OpenAI Chat Completions over local AI CLIs. Tool calls are validated structured-output requests executed by the client (e.g. Hermes), never by the wrapper. This is a prompt bridge, not native provider function calling.")
     app.state.config = config
     app.state.dynamic_label = app_state_label
@@ -302,7 +302,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         completion_id = "chatcmpl-" + uuid.uuid4().hex
         created = int(time.time())
         base = {"id": completion_id, "created": created, "model": model.id}
-        headers = {"X-Wrapper-Tool-Mode": "prompt-bridge", "X-Wrapper-Generation-Controls": "advisory"}
+        headers = {"X-Quanta-Tool-Mode": "prompt-bridge", "X-Quanta-Generation-Controls": "advisory"}
 
         if not stream:
             parsed, usage = item[1]

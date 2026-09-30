@@ -10,13 +10,24 @@ from .commands import resolve_command
 from .config import BRIDGE_NOTES, initialize_config, load_config
 
 
+QUANTA_CONFIG = "quanta.config.json"
+LEGACY_CONFIG = "wrapper.config.json"
+
+
+def _default_config() -> str:
+    """Prefer quanta.config.json, but keep serving an existing legacy file."""
+    if not Path(QUANTA_CONFIG).exists() and Path(LEGACY_CONFIG).exists():
+        return LEGACY_CONFIG
+    return QUANTA_CONFIG
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Expose local AI CLIs as an authenticated OpenAI-compatible API")
+    parser = argparse.ArgumentParser(prog="quanta", description="Quanta — expose local AI CLIs as an authenticated OpenAI-compatible API")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name, help_text in [("init", "Create a configuration and random API key"), ("doctor", "Resolve CLI executables without model calls"), ("serve", "Run the FastAPI server (interactive client/model picker)"), ("chat", "One-shot prompt against a chosen client/model (no server)")]:
+    for name, help_text in [("init", "Create a configuration and random API key"), ("doctor", "Resolve CLI executables without model calls"), ("serve", "Run the FastAPI server (interactive client/model picker)"), ("chat", "One-shot prompt against a chosen client/model (no server)"), ("switch", "Rewrite the configuration to one client/model (persisted)")]:
         command = sub.add_parser(name, help=help_text)
-        command.add_argument("--config", "-c", default="wrapper.config.json", help="Configuration path (default: wrapper.config.json)")
-        if name in ("serve", "chat"):
+        command.add_argument("--config", "-c", default=None, help=f"Configuration path (default: {QUANTA_CONFIG}, else {LEGACY_CONFIG})")
+        if name in ("serve", "chat", "switch"):
             command.add_argument("--provider", help="Skip the client list and use this provider directly")
             command.add_argument("--model", help="Skip the model prompt and use this upstream model id directly")
             command.add_argument("--alias", help="Alias id to expose (default: <provider>-<model slug>)")
@@ -27,12 +38,14 @@ def main():
         if name == "chat":
             command.add_argument("prompt", nargs="?", help="Prompt text (reads stdin when omitted)")
     args = parser.parse_args()
+    if args.config is None:
+        args.config = _default_config()
     try:
         if args.command == "init":
             initialize_config(args.config)
             print(f"Created {Path(args.config).resolve()}")
             print("A random API key is stored in server.apiKey; keep this file private.")
-            print("Next: global-api doctor, then global-api serve")
+            print("Next: quanta doctor, then quanta serve")
             return
         overrides = {key: getattr(args, key) for key in ("host", "port") if getattr(args, key, None) is not None}
         config = load_config(args.config, overrides)
@@ -55,7 +68,15 @@ def main():
             print("Tool calling: structured-output prompt bridge; Hermes executes the returned tool calls.")
             print("Doctor checks paths only, not login, CLI version/protocol, permissions, or model availability.")
             raise SystemExit(1 if failures or not models else 0)
-        from .picker import interactive_serve_selection
+        from .picker import interactive_serve_selection, persist_selection
+        if args.command == "switch":
+            selected = interactive_serve_selection(config, provider_arg=args.provider,
+                                                   model_arg=args.model, alias_arg=args.alias)
+            persist_selection(args.config, selected)
+            alias = selected.exposed_models()[0].id
+            print(f"Saved to {Path(args.config).resolve()}: serving {alias!r}. "
+                  "Restart `quanta serve` to apply.")
+            return
         if args.command == "chat":
             import asyncio
             import sys
@@ -76,7 +97,7 @@ def main():
         non_interactive = args.provider is not None or args.model is not None or not os.isatty(0)
         if non_interactive and args.provider is None and args.model is None:
             print("Non-interactive stdin: using config-file models (no picker).")
-            print("Tip: skip the prompts with `global-api serve --provider <name> --model <upstream-id>`.")
+            print("Tip: skip the prompts with `quanta serve --provider <name> --model <upstream-id>`.")
             selected = config
         else:
             selected = interactive_serve_selection(config, provider_arg=args.provider,
@@ -95,7 +116,7 @@ def main():
             menu.start()
         else:
             print("Mid-session menu disabled; use the admin API: POST /v1/session/switch.")
-        print(f"API: http://{selected.server.host}:{selected.server.port}/v1")
+        print(f"Quanta API: http://{selected.server.host}:{selected.server.port}/v1")
         print(f"Swagger docs: http://{selected.server.host}:{selected.server.port}/docs")
         print("Bearer authentication is required. API key is not logged.")
         print("Mid-session: type `menu` in this console, or POST /v1/session/switch.")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 
@@ -172,3 +173,21 @@ def interactive_serve_selection(config, *, provider_arg: str | None = None,
     print(f"Serving model {alias_id!r} on provider {provider_name!r} (upstream {upstream!r}).")
     print("Config files were not modified; this selection lives only for this process.")
     return validated
+
+
+def persist_selection(config_path: str | Path, validated) -> None:
+    """Write a composed selection back to the config file, keeping the API key.
+
+    Only `providers[].enabled` and `models` are rewritten; every other field
+    (server settings, apiKey, provider args/env/timeouts) is left untouched.
+    """
+    path = Path(config_path).resolve()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for name, provider in validated.providers.items():
+        if name in raw.get("providers", {}):
+            raw["providers"][name]["enabled"] = provider.enabled
+    raw["models"] = [{"id": m.id, "provider": m.provider,
+                      **({"upstreamModel": m.upstream_model} if m.upstream_model else {}),
+                      **({"upstreamProvider": m.upstream_provider} if m.upstream_provider else {})}
+                     for m in validated.models]
+    path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")

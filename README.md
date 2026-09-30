@@ -1,12 +1,12 @@
-# Global API Wrapper
+# Quanta
 
 OpenAI-compatible FastAPI bridge for local AI CLIs, including
 client-side tool calling via a structured-output prompt bridge.
 
-The wrapper spawns a configured CLI per request, sends the conversation
+Quanta spawns a configured CLI per request, sends the conversation
 as a text prompt, validates the model's structured tool-call envelope,
 and returns an OpenAI-style completion. Tool calls are **returned to
-the client for execution** (e.g. Hermes) — the wrapper never executes
+the client for execution** (e.g. Hermes) — Quanta never executes
 them and never runs shell commands from transcripts.
 
 
@@ -14,10 +14,14 @@ them and never runs shell commands from transcripts.
 
 ```bash
 pip install -e ".[test]"
-global-api init                    # creates wrapper.config.json + random apiKey
-global-api doctor                  # resolve CLI executables, no model calls
-global-api serve                   # picker: list a client, type a model id
+quanta init                        # creates quanta.config.json + random apiKey
+quanta doctor                      # resolve CLI executables, no model calls
+quanta serve                       # picker: list a client, type a model id
 ```
+
+`global-api` remains installed as a deprecated alias for `quanta`, and
+`quanta.config.json` / a legacy `wrapper.config.json` are both accepted
+(the legacy file is used automatically when the new one is absent).
 
 `serve` opens an interactive picker: choose the client from a numbered
 list, then enter the upstream model id (a numbered known-model list is
@@ -26,8 +30,8 @@ opencode). The selection is in-memory only; config files are never
 modified. Non-interactive equivalent:
 
 ```bash
-global-api serve --provider opencode --model opencode/mymodel --alias myalias
-global-api chat --provider opencode --model opencode/mymodel "Say hi"
+quanta serve --provider opencode --model opencode/mymodel --alias myalias
+quanta chat --provider opencode --model opencode/mymodel "Say hi"
 ```
 
 Mid-session switching (no restart, no file edits):
@@ -36,21 +40,24 @@ Mid-session switching (no restart, no file edits):
   model id (`--no-menu` disables this; piping stdin disables it too).
 - HTTP admin API (same Bearer key): `GET /v1/session`,
   `POST /v1/session/switch {"provider": "...", "model": "..."}`.
+- Persist a choice to the config file (keeps your API key and provider
+  args): `quanta switch` (picker), or `quanta switch -p opencode -m opencode/mymodel`.
 - In-flight requests finish on the old mapping; new requests use the new one.
 
 Authenticate every request with the configured key:
 
 ```bash
 curl http://127.0.0.1:8787/v1/models \
-  -H "Authorization: Bearer $GLOBAL_API_KEY"
+  -H "Authorization: Bearer $QUANTA_API_KEY"
 curl http://127.0.0.1:8787/v1/chat/completions \
-  -H "Authorization: Bearer $GLOBAL_API_KEY" \
+  -H "Authorization: Bearer $QUANTA_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"omnirush","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-`GLOBAL_API_KEY` overrides `server.apiKey` when set. Keep
-`wrapper.config.json` private — it holds the API key (0600 on init).
+`QUANTA_API_KEY` overrides `server.apiKey` when set (`GLOBAL_API_KEY` is
+still read as a fallback). Keep `quanta.config.json` private — it holds
+the API key (0600 on init).
 
 ## Endpoints
 
@@ -70,7 +77,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 ## Configuration
 
-See `wrapper.config.example.json`. Key fields:
+See `quanta.config.example.json`. Key fields:
 
 - `server`: `host`, `port`, `apiKeyEnv`, `apiKey`, `maxBodyBytes`,
   `maxConcurrent`, `corsOrigins` (exact `http(s)` origins, no wildcards).
@@ -87,9 +94,21 @@ policies) and pass the prompt over stdin. Antigravity requires Google
 `agy >= 1.1.15` with deny permissions plus `acknowledgeAgentRisk: true`.
 FreeBuff has no verified headless interface — configure a `custom` bridge.
 
+## Client status (verified locally)
+
+| Client | Adapter | Invocation | Status |
+| --- | --- | --- | --- |
+| OmniRush | `omnirush` | `omnirush --print --mode json ...` (stdin prompt, tools off) | wiring OK; needs CLI login |
+| Opencode | `opencode` | `opencode run --pure --dir <ws> --model <id>` (stdin prompt, plain text) | working (tested `opencode/muse-spark-1.3-contributor-free`) |
+| Cline | `cline` | `cline <prompt> --json --plan --auto-approve false ...` | wiring OK; needs Cline re-auth |
+| Antigravity | `antigravity` | `agy --input-format stream-json --output-format stream-json ...` | handshake OK; needs deny permissions + `acknowledgeAgentRisk` |
+| FreeBuff | `freebuff` | none — interactive TUI only (no prompt/JSON mode) | blocked by design; use `custom` bridge |
+
+`quanta doctor` verifies paths only, never login/models.
+
 ## Development
 
 ```bash
 python -m pytest -q
-global-api doctor
+quanta doctor
 ```

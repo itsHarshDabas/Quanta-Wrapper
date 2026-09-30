@@ -5,7 +5,7 @@ import copy
 import logging
 import threading
 
-log = logging.getLogger("global_api_wrapper.menu")
+log = logging.getLogger("quanta.menu")
 
 
 class SessionMenu:
@@ -30,7 +30,7 @@ class SessionMenu:
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(target=self._loop, name="gaw-menu", daemon=True)
+        self._thread = threading.Thread(target=self._loop, name="quanta-menu", daemon=True)
         self._thread.start()
         print('Menu: type "menu" + Enter in this console to change client/model mid-session.')
 
@@ -54,7 +54,7 @@ class SessionMenu:
         from .picker import _provider_models, _resolve_providers, compose_dynamic_model, pick_from_list
 
         usable = [n for n, p in self._config.providers.items()
-                  if p.adapter not in __import__("global_api_wrapper.config", fromlist=["BRIDGE_NOTES"]).BRIDGE_NOTES]
+                  if p.adapter not in __import__("quanta.config", fromlist=["BRIDGE_NOTES"]).BRIDGE_NOTES]
         resolved = _resolve_providers(self._config)
         labels = [f"{n} ({self._config.providers[n].adapter}) — {resolved.get(n) or 'not found on PATH'}"
                   for n in usable]

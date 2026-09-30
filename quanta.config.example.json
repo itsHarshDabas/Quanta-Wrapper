@@ -2,7 +2,7 @@
   "server": {
     "host": "127.0.0.1",
     "port": 8787,
-    "apiKeyEnv": "GLOBAL_API_KEY",
+    "apiKeyEnv": "QUANTA_API_KEY",
     "maxBodyBytes": 1048576,
     "maxConcurrent": 4,
     "corsOrigins": []

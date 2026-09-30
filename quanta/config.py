@@ -22,7 +22,7 @@ class SettingsModel(BaseModel):
 class ServerSettings(SettingsModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=0, le=65535)
-    api_key_env: str = "GLOBAL_API_KEY"
+    api_key_env: str = "QUANTA_API_KEY"
     api_key: str = Field(default="", repr=False)
     max_body_bytes: int = Field(default=1048576, ge=1024, le=16777216)
     max_concurrent: int = Field(default=4, ge=1, le=64)
@@ -115,7 +115,10 @@ def validate_config(raw: dict, base_dir: Path | str = ".", env: dict | None = No
         prepared["providers"][name] = {**defaults.model_dump(by_alias=True), **settings}
     prepared.setdefault("server", {})
     config = Configuration.model_validate(prepared)
-    config.server.api_key = env.get(config.server.api_key_env, config.server.api_key)
+    # Back-compat: existing wrapper.config.json files use GLOBAL_API_KEY;
+    # QUANTA_API_KEY wins when both are set.
+    secret = env.get(config.server.api_key_env, "") or env.get("GLOBAL_API_KEY", "") or config.server.api_key
+    config.server.api_key = secret
     if len(config.server.api_key) < 24 or re.search(r"\s", config.server.api_key):
         raise ValueError(f"Set {config.server.api_key_env} or server.apiKey to a secret of at least 24 characters without whitespace")
     _no_nul(config.server.host, "server.host")
@@ -179,7 +182,7 @@ def initialize_config(filename: str | Path):
     filename = Path(filename).resolve()
     filename.parent.mkdir(parents=True, exist_ok=True)
     config = example_config()
-    config["server"]["apiKey"] = "gaw_" + secrets.token_hex(32)
+    config["server"]["apiKey"] = "quanta_" + secrets.token_hex(32)
     descriptor = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)

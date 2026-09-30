@@ -8,7 +8,7 @@ import unittest
 from uuid import UUID
 from unittest.mock import patch
 
-from global_api_wrapper.protocol import (
+from quanta.protocol import (
     GENERATION_HINT_FIELDS,
     MAX_JSON_ARGUMENT_BYTES,
     MAX_MESSAGES,

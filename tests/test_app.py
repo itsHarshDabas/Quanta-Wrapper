@@ -7,10 +7,10 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from global_api_wrapper.app import create_app
-from global_api_wrapper.config import example_config, validate_config
-from global_api_wrapper.errors import ApiError
-from global_api_wrapper.runner import RunResult
+from quanta.app import create_app
+from quanta.config import example_config, validate_config
+from quanta.errors import ApiError
+from quanta.runner import RunResult
 
 
 def make_app(runner=None, **overrides):

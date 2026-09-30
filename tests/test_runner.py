@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from global_api_wrapper.adapters import Decoder, build_invocation
-from global_api_wrapper.commands import resolve_command, unwrap_windows_shim
-from global_api_wrapper.config import ModelAlias, Provider, example_config, validate_config
-from global_api_wrapper.errors import ApiError
-from global_api_wrapper.runner import run_cli
+from quanta.adapters import Decoder, build_invocation
+from quanta.commands import resolve_command, unwrap_windows_shim
+from quanta.config import ModelAlias, Provider, example_config, validate_config
+from quanta.errors import ApiError
+from quanta.runner import run_cli
 
 FIXTURE = str(Path(__file__).parent / "fixtures" / "fake_cli.py")
 
@@ -111,13 +111,13 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_executable(self):
         p = self.provider("echo")
-        p.command = "nonexistent-global-api-wrapper-test-command-987"
+        p.command = "nonexistent-quanta-test-command-987"
         with self.assertRaises(ApiError) as error:
             await run_cli(p, self.model, "hi")
         self.assertEqual(error.exception.status, 503)
 
     async def test_wrapper_secret_not_in_child_environment(self):
-        with patch.dict(os.environ, {"GLOBAL_API_KEY": "private-key"}):
+        with patch.dict(os.environ, {"QUANTA_API_KEY": "private-key"}):
             result = json.loads((await run_cli(self.provider("env"), self.model, "hi")).text)
         self.assertFalse(result["key_present"])
         self.assertEqual(Path(result["cwd"]), Path(self.temp.name))
@@ -176,6 +176,17 @@ class DecoderTests(unittest.TestCase):
         d = self.decode("cline", [{"type": "say", "say": "text", "ts": 1, "text": "ans"}, {"type": "say", "say": "text", "ts": 1, "text": "answer"}])
         self.assertEqual(d.text, "answer")
 
+    def test_cline_passes_prompt_as_positional_argument(self):
+        invocation = build_invocation(Provider(adapter="cline", command="cline"),
+                                      ModelAlias(id="t", provider="p", upstream_model="some-model"),
+                                      "DATA & echo ATTACK", "state")
+        # Cline 3.x rejects stdin prompts in JSON mode; the prompt must be argv.
+        self.assertEqual(invocation.stdin, "")
+        self.assertEqual(invocation.args[-1], "DATA & echo ATTACK")
+        self.assertIn("--json", invocation.args)
+        self.assertIn("--plan", invocation.args)
+        self.assertNotIn("--yolo", invocation.args)
+
     def test_antigravity_result_dedup_and_status(self):
         events = [{"event": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "hello"}},
                   {"event": "result", "result": {"status": "SUCCESS", "response": "hello"}}]
@@ -198,9 +209,16 @@ class ConfigurationTests(unittest.TestCase):
         return raw
 
     def test_config_defaults_and_secret_override(self):
-        config = validate_config(self.config(), env={"GLOBAL_API_KEY": "b" * 32})
+        config = validate_config(self.config(), env={"QUANTA_API_KEY": "b" * 32})
         self.assertEqual(config.server.api_key, "b" * 32)
         self.assertEqual(config.providers["omnirush"].max_concurrent, 1)
+
+    def test_legacy_env_var_still_accepted(self):
+        config = validate_config(self.config(), env={"GLOBAL_API_KEY": "c" * 32})
+        self.assertEqual(config.server.api_key, "c" * 32)
+        # QUANTA_API_KEY wins when both are present.
+        both = validate_config(self.config(), env={"QUANTA_API_KEY": "d" * 32, "GLOBAL_API_KEY": "c" * 32})
+        self.assertEqual(both.server.api_key, "d" * 32)
 
     def test_invalid_keys_and_unsupported_native_freebuff(self):
         for field, value in [("apiKey", "short"), ("port", -1), ("corsOrigins", ["*"]), ("maxConcurrent", 0)]:
@@ -227,8 +245,14 @@ class ConfigurationTests(unittest.TestCase):
         for adapter in ("omnirush", "opencode", "cline", "antigravity"):
             p = Provider(adapter=adapter, command=adapter)
             invocation = build_invocation(p, model, "PROMPT", "state")
-            self.assertNotIn("PROMPT", invocation.args)
-            self.assertIn("PROMPT", invocation.stdin)
+            # Cline requires a positional prompt (stdin prompts are rejected in
+            # JSON mode); every other preset passes the prompt over stdin.
+            if adapter == "cline":
+                self.assertEqual(invocation.args[-1], "PROMPT")
+                self.assertEqual(invocation.stdin, "")
+            else:
+                self.assertNotIn("PROMPT", invocation.args)
+                self.assertIn("PROMPT", invocation.stdin)
             self.assertIn("--model", invocation.args)
             self.assertNotIn("--dangerously-skip-permissions", invocation.args)
 
