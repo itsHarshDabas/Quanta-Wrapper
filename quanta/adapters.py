@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from .config import ModelAlias, Provider
@@ -14,8 +15,15 @@ class Invocation:
     env: dict[str, str] = field(default_factory=dict)
 
 
+def effective_model(model: ModelAlias) -> str | None:
+    """Upstream model id, or None to use the CLI's own configured default."""
+    upstream = (model.upstream_model or "").strip()
+    return None if upstream.lower() in ("", "default") else upstream
+
+
 def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_dir: str) -> Invocation:
-    model_args = ["--model", model.upstream_model] if model.upstream_model else []
+    upstream = effective_model(model)
+    model_args = ["--model", upstream] if upstream else []
     provider_args = ["--provider", model.upstream_provider] if model.upstream_provider else []
     extra = provider.args
     if provider.adapter == "omnirush":
@@ -30,19 +38,22 @@ def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_d
         # Cline CLI rejects stdin prompts in JSON mode ("JSON output mode
         # requires a prompt argument or piped stdin"): the prompt must be a
         # positional argument. The prompt is passed as a single argv item, so
-        # shell metacharacters are data, not interpreted. Start-up config lives
-        # in a temp dir so one run cannot leak state into another.
-        return Invocation([*extra, "--json", "--plan", "--auto-approve", "false", "--data-dir", state_dir,
+        # shell metacharacters are data, not interpreted. Cline's own data dir
+        # is used (an isolated --data-dir has no credentials and every run
+        # fails "Unauthorized"); per-provider concurrency is 1 by default.
+        return Invocation([*extra, "--json", "--plan", "--auto-approve", "false",
                            "--timeout", str(max(1, (provider.timeout_ms + 999) // 1000)),
                            *provider_args, *model_args, prompt], "",
                           {"CLINE_SESSION_BACKEND_MODE": "local", "CLINE_TOOL_APPROVAL_MODE": "terminal",
                            "CLINE_COMMAND_PERMISSIONS": '{"deny":["*"]}'})
     if provider.adapter == "antigravity":
-        return Invocation([*extra, "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout",
+        # --mode plan keeps the agent read-only; tool permission requests cannot
+        # be approved in print mode, so they are not auto-granted.
+        return Invocation([*extra, "--mode", "plan", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout",
                            f"{max(1, (provider.timeout_ms + 999) // 1000)}s", *model_args],
                           json.dumps({"event": "user", "message": {"content": prompt}}, ensure_ascii=False) + "\n")
     if provider.adapter == "custom":
-        args = [prompt if arg == "{prompt}" else arg.replace("{model}", model.upstream_model or model.id) for arg in extra]
+        args = [prompt if arg == "{prompt}" else arg.replace("{model}", upstream or model.id) for arg in extra]
         return Invocation(args, prompt if provider.prompt_mode == "stdin" else "")
     raise ApiError(503, "unsupported_adapter", "This CLI requires a non-interactive bridge.")
 
@@ -51,8 +62,16 @@ def _protocol_error():
     return ApiError(502, "cli_protocol_error", "CLI output does not match its expected protocol. Check CLI version and configuration locally.")
 
 
-def _upstream_error():
-    return ApiError(502, "cli_reported_error", "The CLI reported an unsuccessful model run. Check login and model configuration locally.")
+def _upstream_error(detail: str | None = None):
+    message = "The CLI reported an unsuccessful model run. Check login and model configuration locally."
+    status = 502
+    if isinstance(detail, str) and detail.strip():
+        # API error text from the upstream provider (never stderr/prompt text).
+        clean = " ".join(detail.split())[:240]
+        message += f" Upstream: {clean}"
+        if re.search(r"429|grant exhausted|rate.?limit", clean, re.I):
+            status = 429
+    return ApiError(status, "cli_reported_error", message)
 
 
 class Decoder:
@@ -108,7 +127,7 @@ class Decoder:
                 self._add(event["assistantMessageEvent"]["delta"])
             if kind == "message_end" and message.get("role") == "assistant":
                 if message.get("stopReason") in ("error", "aborted") or message.get("errorMessage"):
-                    raise _upstream_error()
+                    raise _upstream_error(message.get("errorMessage"))
                 text = "".join(p.get("text", "") for p in message.get("content", []) if p.get("type") == "text")
                 self._authoritative(text, self.message_text)
                 u = message.get("usage", {})
@@ -116,7 +135,7 @@ class Decoder:
             if kind == "agent_end":
                 self.completed = True
             if kind == "error":
-                raise _upstream_error()
+                raise _upstream_error(event.get("message") if isinstance(event.get("message"), str) else None)
         elif self.mode == "cline":
             # Current Cline's nested events mix narration and tool activity.
             # Use the authoritative run_result rather than guessing deltas.
@@ -130,7 +149,7 @@ class Decoder:
             if kind == "say" and event.get("say") in ("text", "completion_result"):
                 self.legacy[event.get("ts", "last")] = event["text"]
             if kind in ("run_aborted", "error") or (kind == "say" and event.get("say") == "error"):
-                raise _upstream_error()
+                raise _upstream_error(event.get("message") if isinstance(event.get("message"), str) else None)
         elif self.mode == "antigravity":
             update = event.get("step_update", {})
             if event.get("event") == "step_update" and update.get("step_type") == "agent_response" and "text_delta" in update:

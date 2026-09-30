@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quanta — one API for every CLI</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='16' fill='%23000'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23dceeb1'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="top-nav">
+  <div class="nav-inner">
+    <a class="wordmark" href="#top">Quanta</a>
+    <nav class="nav-links" id="nav-links" aria-label="Sections">
+      <a href="#providers">Providers</a>
+      <a href="#playground">Playground</a>
+      <a href="#activity">Activity</a>
+      <a href="#connect">Connect</a>
+    </nav>
+    <div class="nav-actions">
+      <span class="status-pill" id="conn-pill" data-state="idle"><i></i><span id="conn-text">Not connected</span></span>
+      <a class="btn btn-secondary" href="#connect" id="nav-key">API key</a>
+      <a class="btn btn-primary" href="#playground">Open playground</a>
+    </div>
+    <button class="icon-btn nav-burger" id="burger" aria-label="Menu" aria-expanded="false">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 5h14M2 9h14M2 13h14"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <p class="eyebrow">OpenAI-compatible gateway</p>
+    <h1 class="display-xl">One API for every&nbsp;CLI.</h1>
+    <p class="body-lg hero-copy">Point Hermes, or any OpenAI client, at a single local endpoint. Quanta routes each request to OpenCode, Cline, Antigravity or OmniRush, and lets you switch CLI and model in the middle of a conversation.</p>
+    <div class="hero-actions">
+      <button class="btn btn-primary" id="copy-base" type="button"><span id="base-label">http://127.0.0.1:8787/v1</span><span class="copy-hint">Copy</span></button>
+      <a class="btn btn-secondary" href="#providers">See providers</a>
+    </div>
+  </section>
+
+  <div class="marquee" aria-label="Provider status"><div class="marquee-track" id="marquee"></div></div>
+
+  <section class="block block-lime" id="providers">
+    <p class="eyebrow">Providers</p>
+    <h2 class="display-lg">Every CLI, honestly described.</h2>
+    <p class="subhead">Capabilities come from the running gateway. Anything a CLI cannot do through this API is marked unavailable, not faked.</p>
+    <div class="banner" id="providers-banner" hidden></div>
+    <div class="grid" id="provider-grid"></div>
+
+    <div class="card card-wide switch-card">
+      <div>
+        <h3 class="card-title">Server default</h3>
+        <p class="body-sm" id="serving-line">Connect with your API key to load the current selection.</p>
+        <p class="body-sm">Switching here narrows the served model list to a single alias. To switch without touching the server, pick a provider and model per message in the playground.</p>
+      </div>
+      <form class="switch-form" id="switch-form">
+        <label class="field"><span class="caption">Provider</span><select id="sw-provider"></select></label>
+        <label class="field"><span class="caption">Model id</span><input id="sw-model" list="sw-models" placeholder="provider/model" autocomplete="off"><datalist id="sw-models"></datalist></label>
+        <button class="btn btn-primary" type="submit">Apply</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="block block-lilac" id="playground">
+    <p class="eyebrow">Playground</p>
+    <h2 class="display-lg">Talk to any CLI. Switch mid&#8209;thought.</h2>
+    <p class="subhead">The conversation lives in this page and is resent on every turn, so changing CLI or model between messages keeps the full history.</p>
+
+    <div class="card play">
+      <div class="play-controls">
+        <label class="field"><span class="caption">CLI provider</span><select id="pg-provider"></select></label>
+        <label class="field grow"><span class="caption">Model id</span><input id="pg-model" list="pg-models" placeholder="default" autocomplete="off"><datalist id="pg-models"></datalist></label>
+        <label class="check"><input type="checkbox" id="pg-stream" checked><span>Stream</span></label>
+        <label class="check"><input type="checkbox" id="pg-tools"><span>Sample tools</span></label>
+      </div>
+      <div class="target-line body-sm">Sending to <code id="pg-target">—</code></div>
+      <label class="field"><span class="caption">System prompt</span><textarea id="pg-system" rows="2" placeholder="Optional. Stays with the conversation across switches."></textarea></label>
+
+      <div class="thread" id="thread" aria-live="polite">
+        <p class="empty body-sm">No messages yet. Choose a provider and say something.</p>
+      </div>
+
+      <form class="composer" id="composer">
+        <textarea id="pg-input" rows="2" placeholder="Message" required></textarea>
+        <div class="composer-actions">
+          <button class="btn btn-secondary" type="button" id="pg-clear">Clear</button>
+          <button class="btn btn-secondary" type="button" id="pg-stop" hidden>Stop</button>
+          <button class="btn btn-primary" type="submit" id="pg-send">Send</button>
+        </div>
+      </form>
+      <p class="body-sm" id="pg-status"></p>
+    </div>
+  </section>
+
+  <section class="block block-cream" id="activity">
+    <p class="eyebrow">Activity</p>
+    <h2 class="display-lg">What just happened.</h2>
+    <p class="subhead">Metadata for the last completions handled by the gateway. Prompts, outputs and keys are never stored.</p>
+    <div class="card card-wide table-card">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Time</th><th>Model</th><th>Provider</th><th>Mode</th><th>Duration</th><th>Result</th></tr></thead>
+          <tbody id="activity-rows"><tr><td colspan="6" class="body-sm">Nothing yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card card-wide" id="errors-card" hidden>
+      <h3 class="card-title">Errors seen by this page</h3>
+      <ul class="error-list" id="error-list"></ul>
+    </div>
+  </section>
+
+  <section class="block block-navy" id="connect">
+    <p class="eyebrow">Connect</p>
+    <h2 class="display-lg">Wire up Hermes in a minute.</h2>
+    <p class="subhead">Your key stays in this browser. The gateway never shows it back.</p>
+    <div class="connect-grid">
+      <div class="panel">
+        <h3 class="card-title">API key</h3>
+        <form id="key-form" class="key-form">
+          <input id="key-input" type="password" placeholder="Paste the server.apiKey from quanta.config.json" autocomplete="off" spellcheck="false">
+          <div class="key-actions">
+            <button class="btn btn-inverse" type="submit">Save &amp; test</button>
+            <button class="btn btn-ghost-inverse" type="button" id="key-forget">Forget</button>
+          </div>
+        </form>
+        <p class="body-sm" id="key-status">No key saved.</p>
+        <p class="body-sm">Keys are managed by the gateway config: run <code>quanta init</code> for a new one, or edit <code>server.apiKey</code>. The API does not rotate keys remotely.</p>
+      </div>
+      <div class="panel">
+        <h3 class="card-title">Hermes</h3>
+        <p class="body-sm">Put this in <code>config.yaml</code> under your Hermes home.</p>
+        <pre class="snippet" id="snip-hermes"></pre>
+        <button class="btn btn-ghost-inverse" type="button" data-copy="snip-hermes">Copy</button>
+      </div>
+      <div class="panel">
+        <h3 class="card-title">curl</h3>
+        <pre class="snippet" id="snip-curl"></pre>
+        <button class="btn btn-ghost-inverse" type="button" data-copy="snip-curl">Copy</button>
+      </div>
+      <div class="panel">
+        <h3 class="card-title">Switching by model name</h3>
+        <pre class="snippet" id="snip-switch"></pre>
+        <p class="body-sm">Any enabled provider is addressable as <code>provider:model</code>. Use <code>default</code> for a CLI's own default model.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <span class="wordmark">Quanta</span>
+  <span class="caption">Local gateway · OpenAI-compatible · Tools run on the client</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

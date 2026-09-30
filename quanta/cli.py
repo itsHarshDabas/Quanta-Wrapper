@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .commands import resolve_command
 from .config import BRIDGE_NOTES, initialize_config, load_config
+from .tty import stdin_is_interactive
 
 
 QUANTA_CONFIG = "quanta.config.json"
@@ -24,7 +25,7 @@ def _default_config() -> str:
 def main():
     parser = argparse.ArgumentParser(prog="quanta", description="Quanta — expose local AI CLIs as an authenticated OpenAI-compatible API")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name, help_text in [("init", "Create a configuration and random API key"), ("doctor", "Resolve CLI executables without model calls"), ("serve", "Run the FastAPI server (interactive client/model picker)"), ("chat", "One-shot prompt against a chosen client/model (no server)"), ("switch", "Rewrite the configuration to one client/model (persisted)")]:
+    for name, help_text in [("init", "Create a configuration and random API key"), ("doctor", "Resolve CLI executables without model calls"), ("serve", "Run the FastAPI server (interactive client/model picker)"), ("chat", "One-shot prompt against a chosen client/model (no server)"), ("switch", "Rewrite the configuration to one client/model (persisted)"), ("ui", "Serve the web UI on its own local port (talks to a running `quanta serve`)")]:
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--config", "-c", default=None, help=f"Configuration path (default: {QUANTA_CONFIG}, else {LEGACY_CONFIG})")
         if name in ("serve", "chat", "switch"):
@@ -35,6 +36,12 @@ def main():
             command.add_argument("--host", help="Use 0.0.0.0 to listen on the network")
             command.add_argument("--port", type=int)
             command.add_argument("--no-menu", action="store_true", help="Disable the mid-session 'menu' console switcher")
+        if name in ("serve", "ui"):
+            command.add_argument("--ui-port", type=int, default=8788, help="Port for the web UI (default 8788)")
+        if name == "serve":
+            command.add_argument("--ui", action="store_true", help="Also serve the web UI on --ui-port")
+            command.add_argument("--mode", choices=("cli", "gui"), help="Skip the startup menu: cli = terminal setup, gui = open the browser UI")
+            command.add_argument("--no-browser", action="store_true", help="With gui mode, print the UI address instead of opening a browser")
         if name == "chat":
             command.add_argument("prompt", nargs="?", help="Prompt text (reads stdin when omitted)")
     args = parser.parse_args()
@@ -68,7 +75,17 @@ def main():
             print("Tool calling: structured-output prompt bridge; Hermes executes the returned tool calls.")
             print("Doctor checks paths only, not login, CLI version/protocol, permissions, or model availability.")
             raise SystemExit(1 if failures or not models else 0)
-        from .picker import interactive_serve_selection, persist_selection
+        if args.command == "ui":
+            from .uiserver import make_ui_server
+            server = make_ui_server(f"http://{config.server.host}:{config.server.port}", port=args.ui_port)
+            print(f"Quanta UI: http://127.0.0.1:{args.ui_port}  (API: http://{config.server.host}:{config.server.port}/v1)")
+            print(f"Allow this origin in server.corsOrigins: http://127.0.0.1:{args.ui_port}")
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            return
+        from .picker import interactive_serve_selection, persist_selection, pick_from_list
         if args.command == "switch":
             selected = interactive_serve_selection(config, provider_arg=args.provider,
                                                    model_arg=args.model, alias_arg=args.alias)
@@ -82,7 +99,7 @@ def main():
             import sys
             from .protocol import format_prompt, validate_request
             from .runner import run_cli
-            prompt = args.prompt or (sys.stdin.read() if not sys.stdin.isatty() else "")
+            prompt = args.prompt or (sys.stdin.read() if not stdin_is_interactive() else "")
             if not (prompt or "").strip():
                 prompt = input("Enter prompt: ")
             selected = interactive_serve_selection(config, provider_arg=args.provider,
@@ -94,10 +111,22 @@ def main():
                 {"model": model.id, "messages": [{"role": "user", "content": prompt}]}))))
             print(result.text)
             return
-        non_interactive = args.provider is not None or args.model is not None or not os.isatty(0)
-        if non_interactive and args.provider is None and args.model is None:
+        interactive = stdin_is_interactive()
+        mode = args.mode
+        if mode is None and (args.provider is not None or args.model is not None):
+            mode = "cli"
+        if mode is None and interactive:
+            choice = pick_from_list("How do you want to set up Quanta?", [
+                "CLI — choose the client and model here in the terminal",
+                f"GUI — open the browser UI (http://127.0.0.1:{args.ui_port}) to set up and test"])
+            mode = "cli" if choice == 0 else "gui"
+        if mode == "gui":
+            print("GUI mode: serving the configuration file; choose providers and models in the browser.")
+            selected = config
+            args.ui = True
+        elif mode is None:
             print("Non-interactive stdin: using config-file models (no picker).")
-            print("Tip: skip the prompts with `quanta serve --provider <name> --model <upstream-id>`.")
+            print("Tip: `quanta serve --mode gui`, or `--provider <name> --model <upstream-id>`.")
             selected = config
         else:
             selected = interactive_serve_selection(config, provider_arg=args.provider,
@@ -105,17 +134,38 @@ def main():
         from .app import create_app
         import uvicorn
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-        app = create_app(selected)
+        app = create_app(selected, base_config=config)
         menu = None
         # The menu reads the server console's stdin. `--no-menu` (or a
         # non-interactive console) disables it; the admin HTTP API below
         # always stays available for programmatic mid-session switches.
-        if not args.no_menu and os.isatty(0):
+        if not args.no_menu and interactive and mode != "gui":
             from .menu import SessionMenu
             menu = SessionMenu(app, config)
             menu.start()
         else:
             print("Mid-session menu disabled; use the admin API: POST /v1/session/switch.")
+        if args.ui:
+            from .uiserver import Handoff, start_ui_thread
+            handoff = Handoff(selected.server.api_key) if mode == "gui" and not args.no_browser else None
+            ui_origin = f"http://127.0.0.1:{args.ui_port}"
+            # In-memory only: let the bundled UI call the API without editing the config file.
+            for origin in (ui_origin, f"http://localhost:{args.ui_port}"):
+                if origin not in config.server.cors_origins:
+                    config.server.cors_origins.append(origin)
+            try:
+                start_ui_thread(f"http://{selected.server.host}:{selected.server.port}", port=args.ui_port, handoff=handoff)
+            except OSError as error:
+                raise ValueError(f"Cannot start the UI on port {args.ui_port}: {error}") from None
+            print(f"Quanta UI:  {ui_origin}")
+            if handoff is not None:
+                import threading
+                import webbrowser
+                # Only a one-time nonce is put in the URL (fragment: not sent to the server, not logged);
+                # the page exchanges it for the key over loopback. The key is never a URL or argv item.
+                url = f"{ui_origin}/#h={handoff.issue()}"
+                threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+                print("Opening your browser…")
         print(f"Quanta API: http://{selected.server.host}:{selected.server.port}/v1")
         print(f"Swagger docs: http://{selected.server.host}:{selected.server.port}/docs")
         print("Bearer authentication is required. API key is not logged.")

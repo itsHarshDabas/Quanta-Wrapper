@@ -26,5 +26,8 @@ global-api = "quanta.cli:main"
 [tool.setuptools.packages.find]
 include = ["quanta*"]
 
+[tool.setuptools.package-data]
+quanta = ["ui/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import hashlib
 import hmac
@@ -67,8 +68,25 @@ async def _disconnected(request):
         await asyncio.sleep(0.2)
 
 
-def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]] = run_cli) -> FastAPI:
+CAPABILITIES = {
+    "streaming": True,
+    # Tools are declared by the client and executed by the client; the CLI only
+    # proposes calls through a validated structured-output envelope.
+    "tool_calling": "client-side prompt bridge",
+    "subagents": False,
+    "session_persistence": False,  # stateless: the client resends the conversation each request
+    "model_switching": True,
+    "provider_switching": True,
+}
+
+
+def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]] = run_cli,
+               base_config: Configuration | None = None) -> FastAPI:
+    """``base_config`` is the full provider set used for per-request ``provider:model``
+    routing; it defaults to ``config`` (which may be a single-provider dynamic copy)."""
+    base = base_config or config
     running: set[asyncio.Task] = set()
+    recent: collections.deque = collections.deque(maxlen=100)
     active: dict[str, int] = {}
     total = 0
     uploads = 0
@@ -155,6 +173,80 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         """Liveness only; does not verify upstream login or model availability."""
         return {"status": "ok"}
 
+    def resolve_model(name):
+        """Return (alias, provider) for a configured alias or an ad-hoc ``provider:model``.
+
+        The ad-hoc form lets a client change CLI and model between turns of the
+        same conversation with no server-side switch: the conversation lives in
+        the request, so history and system prompts carry over unchanged.
+        """
+        from .config import BRIDGE_NOTES, ModelAlias
+
+        alias = models.get(name)
+        if alias:
+            return alias, app.state.config.providers[alias.provider]
+        provider_name, sep, upstream = (name or "").partition(":")
+        provider = base.providers.get(provider_name)
+        if not sep or not provider or not provider.enabled or provider.adapter in BRIDGE_NOTES:
+            return None, None
+        upstream = upstream.strip()
+        if not upstream or "\0" in upstream or len(upstream) > 200:
+            return None, None
+        # Validated above; model_construct skips the alias-id pattern, which would
+        # reject legitimate upstream ids (e.g. "~vendor/model" or "id:tag").
+        return ModelAlias.model_construct(id=name[:200], provider=provider_name, upstream_model=upstream, upstream_provider=None), provider
+
+    @app.get("/v1/providers", dependencies=[Depends(authorize)], tags=["Service"])
+    async def list_providers():
+        """Configured CLI providers, whether they are enabled, and what the gateway supports."""
+        from .config import BRIDGE_NOTES
+
+        data = []
+        for name, item in base.providers.items():
+            blocked = item.adapter in BRIDGE_NOTES
+            data.append({"id": name, "adapter": item.adapter, "enabled": item.enabled and not blocked,
+                         "available": not blocked, "note": BRIDGE_NOTES.get(item.adapter),
+                         "capabilities": CAPABILITIES if not blocked else {k: False for k in CAPABILITIES},
+                         "model_syntax": f"{name}:<upstream-model-id> (or 'default' for the CLI's own default)"})
+        return {"object": "list", "data": data}
+
+    model_cache: dict[str, tuple[float, list[str]]] = {}
+
+    @app.get("/v1/providers/{name}/models", dependencies=[Depends(authorize)], tags=["Service"])
+    async def provider_models(name: str):
+        """Upstream model ids the provider's CLI reports (cached 60s; empty when the CLI cannot list them)."""
+        from .config import BRIDGE_NOTES
+        from .picker import _provider_models
+
+        provider = base.providers.get(name)
+        if not provider or provider.adapter in BRIDGE_NOTES:
+            raise ApiError(404, "provider_not_found", "Unknown or unavailable provider; use GET /v1/providers.", "name")
+        now = time.monotonic()
+        cached = model_cache.get(name)
+        if not cached or now - cached[0] > 60:
+            listed = await asyncio.to_thread(_provider_models, provider.adapter)
+            model_cache[name] = cached = (now, listed)
+        return {"object": "list", "provider": name, "listable": provider.adapter in ("omnirush", "opencode", "antigravity"),
+                "data": [{"id": m, "object": "model", "owned_by": name} for m in cached[1]]}
+
+    @app.get("/v1/requests", dependencies=[Depends(authorize)], tags=["Service"])
+    async def recent_requests():
+        """Most recent chat completions (metadata only: never prompts, outputs or keys)."""
+        return {"object": "list", "data": list(recent)}
+
+    @app.get("/v1/config", dependencies=[Depends(authorize)], tags=["Service"])
+    async def public_config():
+        """Read-only, secret-free view of the running configuration."""
+        current = app.state.config
+        return {"object": "config", "serving": app.state.dynamic_label,
+                "server": {"host": base.server.host, "port": base.server.port, "max_concurrent": base.server.max_concurrent,
+                           "max_body_bytes": base.server.max_body_bytes, "cors_origins": base.server.cors_origins},
+                "defaults": {"timeout_ms": base.defaults.timeout_ms, "max_output_bytes": base.defaults.max_output_bytes},
+                "providers": {n: {"adapter": p.adapter, "enabled": p.enabled, "timeout_ms": p.timeout_ms,
+                                  "max_concurrent": p.max_concurrent} for n, p in base.providers.items()},
+                "aliases": [{"id": m.id, "provider": m.provider, "upstream_model": m.upstream_model}
+                            for m in current.exposed_models()]}
+
     @app.get("/v1/models", dependencies=[Depends(authorize)], tags=["OpenAI"])
     async def list_models():
         data = [{"id": m.id, "object": "model", "created": 0, "owned_by": m.provider,
@@ -227,10 +319,9 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
                 body = validate_request(await _body(request, snapshot.server.max_body_bytes))
             except ProtocolError as error:
                 raise ApiError(400, error.code, str(error), error.param) from None
-            model = models.get(body["model"])
+            model, provider = resolve_model(body["model"])
             if not model:
-                raise ApiError(404, "model_not_found", "Unknown or disabled model; use GET /v1/models.", "model")
-            provider = snapshot.providers[model.provider]
+                raise ApiError(404, "model_not_found", "Unknown or disabled model; use GET /v1/models or '<provider>:<model>' (GET /v1/providers).", "model")
             async with state_lock:
                 if total >= snapshot.server.max_concurrent or active.get(model.provider, 0) >= provider.max_concurrent:
                     raise ApiError(429, "provider_busy", "CLI capacity is busy. Retry later.")
@@ -260,6 +351,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
                 await queue.put(("text", text))
 
         async def generate():
+            outcome = {"status": "cancelled", "code": "request_cancelled", "tool_calls": 0}
             try:
                 result = await runner(provider, model, format_prompt(body), on_text=text_delta,
                                       secret_env=snapshot.server.api_key_env)
@@ -267,17 +359,24 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
                     parsed = parse_response(result.text, body)
                 except ProtocolError as error:
                     raise ApiError(502, "invalid_model_output", str(error)) from None
+                outcome.update(status="ok", code=None, tool_calls=len(parsed.get("tool_calls") or []))
                 await queue.put(("result", (parsed, result.usage)))
             except asyncio.CancelledError:
                 raise
             except ApiError as error:
+                outcome.update(status=error.status, code=error.code)
                 log.warning("request=%s model=%s code=%s", request.state.request_id, model.id, error.code)
                 await queue.put(("error", error))
             except Exception:
+                outcome.update(status=500, code="internal_error")
                 log.error("request=%s model=%s code=internal_error", request.state.request_id, model.id)
                 await queue.put(("error", ApiError(500, "internal_error", "An internal server error occurred.")))
             finally:
-                log.info("request=%s model=%s duration_ms=%d", request.state.request_id, model.id, (time.monotonic() - started) * 1000)
+                duration = int((time.monotonic() - started) * 1000)
+                recent.appendleft({"id": request.state.request_id, "time": int(time.time()), "model": model.id,
+                                   "provider": model.provider, "upstream_model": model.upstream_model,
+                                   "stream": bool(stream), "tools": prompt_bridge, "duration_ms": duration, **outcome})
+                log.info("request=%s model=%s duration_ms=%d", request.state.request_id, model.id, duration)
 
         job = asyncio.create_task(generate())
         running.add(job)

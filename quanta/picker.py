@@ -5,18 +5,14 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from pathlib import Path
 
+# Offline fallback only; the live list comes from `omnirush --list-models`.
 OMNIRUSH_KNOWN_MODELS = [
-    "deepseek-v3.2",
-    "glm-5",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gemini-3-flash",
-    "gemini-3-pro",
-    "kimi-k2.5",
-    "minimax-m2.1",
-    "qwen3-max",
+    "muse-spark-1.3",
+    "gpt-6-sol",
+    "gpt-6-astra",
 ]
 
 
@@ -34,11 +30,12 @@ def pick_from_list(title: str, options: list[str]) -> int:
     print(f"\n{title}")
     for index, option in enumerate(options, 1):
         print(f"  {index}. {option}")
-    while True:
+    for _ in range(20):
         answer = _read_choice(f"Enter number (1-{len(options)})")
         if answer.isdigit() and 1 <= int(answer) <= len(options):
             return int(answer) - 1
         print(f"Please enter a number between 1 and {len(options)}.")
+    raise ValueError("No valid selection (input closed or too many invalid answers); use --provider/--model.")
 
 
 def _resolve_providers(config) -> dict[str, str]:
@@ -75,22 +72,30 @@ def _provider_models(provider_name: str) -> list[str]:
     if provider_name == "omnirush":
         binary = shutil.which("omnirush")
         if binary:
-            for flag in ("models", "--models", "list"):
-                ids = [line.split()[0] for line in run(binary, [flag], 20)
-                       if line and not line.startswith(("#", "-", "="))]
-                if len(ids) >= 2:
-                    return ids
+            ids = []
+            for line in run(binary, ["--list-models"], 30)[1:]:  # first line is the column header
+                parts = line.split()
+                if len(parts) >= 2:
+                    ids.append(parts[1] if parts[0] == "omnirush" else f"{parts[0]}/{parts[1]}")
+            if ids:
+                return ids
         return list(OMNIRUSH_KNOWN_MODELS)
     if provider_name == "opencode":
         binary = shutil.which("opencode")
         if binary:
             return run(binary, ["models"], 30)
         return []
+    if provider_name == "antigravity":
+        binary = shutil.which("agy")
+        if binary:
+            return [line.split()[0] for line in run(binary, ["models"], 30)
+                    if "	" in line and not line.startswith("Fetching")]
+        return []
     return []
 
 
 def _suggest_model_id(provider_name: str, upstream: str) -> str:
-    slug = upstream.replace("/", "-").replace(":", "-").replace(" ", "-")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", upstream).strip("-")
     candidate = f"{provider_name}-{slug}"[:200] or provider_name
     if not candidate[0].isalnum():
         candidate = f"{provider_name}-{candidate}"[:200]
@@ -182,7 +187,7 @@ def persist_selection(config_path: str | Path, validated) -> None:
     (server settings, apiKey, provider args/env/timeouts) is left untouched.
     """
     path = Path(config_path).resolve()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     for name, provider in validated.providers.items():
         if name in raw.get("providers", {}):
             raw["providers"][name]["enabled"] = provider.enabled

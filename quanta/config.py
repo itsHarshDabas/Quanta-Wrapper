@@ -167,7 +167,7 @@ def validate_config(raw: dict, base_dir: Path | str = ".", env: dict | None = No
 
 def load_config(filename: str | Path, overrides: dict | None = None) -> Configuration:
     filename = Path(filename).resolve()
-    raw = json.loads(filename.read_text(encoding="utf-8"))
+    raw = json.loads(filename.read_text(encoding="utf-8-sig"))
     if overrides:
         raw["server"] = {**raw.get("server", {}), **overrides}
     try:
