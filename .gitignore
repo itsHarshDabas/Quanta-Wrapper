@@ -1,6 +1,7 @@
 # Private local configuration and CLI workspaces
 wrapper.config.json
 quanta.config.json
+DESIGN.md
 .env
 .env.*
 !.env.example
