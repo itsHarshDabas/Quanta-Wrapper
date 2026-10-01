@@ -195,6 +195,8 @@ claude
   `opencode models` for that machine (free models rotate), or not logged in. OpenCode runs each
   request in a fresh empty directory (never the wrapper checkout), because running it inside a
   large repo can fail with `Instruction initialization blocked by unavailable sources`.
+  Flags are detected from `opencode run --help` (OpenCode 2.x has no `--pure`/`--dir`; 1.x does), so both work.
+  A message like `Unrecognized flag: --xyz` means a CLI changed again: report it with `opencode --version`.
 - `504 cli_timeout` — raise `timeoutMs`; the process tree is already killed.
 
 ## Live checks
@@ -228,7 +230,7 @@ FreeBuff has no headless interface (verified: `--help` lists only `login`, `--co
 | Client | Adapter | Invocation | Status |
 | --- | --- | --- | --- |
 | OmniRush | `omnirush` | `omnirush --print --mode json ...` (stdin prompt, tools off) | wiring OK; needs CLI login |
-| Opencode | `opencode` | `opencode run --model <id>` (stdin prompt, plain text; isolated cwd) | working (tested `opencode/muse-spark-1.3-contributor-free`) |
+| Opencode | `opencode` | `opencode run [--pure] --model <id>` (stdin prompt, plain text; isolated cwd; `--pure` only if `run --help` lists it) | working (tested `opencode/muse-spark-1.3-contributor-free`) |
 | Cline | `cline` | `cline <prompt> --json --plan --auto-approve false ...` | wiring OK; needs Cline re-auth |
 | Antigravity | `antigravity` | `agy --input-format stream-json --output-format stream-json ...` | handshake OK; needs deny permissions + `acknowledgeAgentRisk` |
 | FreeBuff | `freebuff` | none — interactive TUI only (no prompt/JSON mode) | blocked by design; use `custom` bridge |

@@ -16,6 +16,7 @@ from .adapters import Decoder, build_invocation
 from .commands import resolve_command
 from .config import ModelAlias, Provider
 from .errors import ApiError
+from .probe import supported_flags
 
 
 @dataclass
@@ -78,24 +79,26 @@ async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
                   on_text: Callable[[str], Awaitable[None]] | None = None,
                   secret_env: str = "QUANTA_API_KEY") -> RunResult:
     Path(provider.workspace).mkdir(parents=True, exist_ok=True)
-    state_dir = tempfile.mkdtemp(prefix="quanta-")
-    # OpenCode treats cwd as its project directory and loads project
-    # context/instructions from it (walking up to the enclosing repo). Running
-    # inside the wrapper's own checkout poisons it ("Instruction
-    # initialization blocked by unavailable sources: core/instructions"), and
-    # would also expose wrapper sources to the model, so OpenCode runs in the
-    # fresh empty per-request directory instead of the shared workspace.
-    cwd = state_dir if provider.adapter == "opencode" else provider.workspace
-    env = {**os.environ, **provider.env, "PWD": cwd, "NO_COLOR": "1", "FORCE_COLOR": "0", "TERM": "dumb"}
+    env = {**os.environ, **provider.env, "NO_COLOR": "1", "FORCE_COLOR": "0", "TERM": "dumb"}
     env.pop(secret_env, None)
     try:
         resolved = resolve_command(provider.command, env)
     except (ValueError, OSError):
         raise ApiError(503, "cli_unavailable", "CLI executable is unavailable. Run quanta doctor on the server.") from None
+    state_dir = tempfile.mkdtemp(prefix="quanta-")  # created after the checks above so a failure cannot leak it
+    # OpenCode treats cwd as its project directory and loads project context/instructions from it
+    # (walking up to the enclosing repo). Running inside the wrapper's own checkout poisons it
+    # ("Instruction initialization blocked by unavailable sources: core/instructions") and would expose
+    # wrapper sources to the model, so OpenCode runs in the fresh empty per-request directory instead.
+    cwd = state_dir if provider.adapter == "opencode" else provider.workspace
+    env["PWD"] = cwd
     process = None
     tasks: list[asyncio.Task] = []
     try:
-        invocation = build_invocation(provider, model, prompt, state_dir)
+        flags = None
+        if provider.adapter == "opencode":
+            flags = await asyncio.to_thread(supported_flags, resolved.executable, tuple(resolved.prefix), ("run", "--help"), state_dir, env=env)
+        invocation = build_invocation(provider, model, prompt, state_dir, flags)
         entrypoint = Path(resolved.entrypoint) if resolved.entrypoint else None
         # Explicitly load only OmniRush's trusted provider integration for device
         # token refresh; leave general extension discovery and local tools disabled.

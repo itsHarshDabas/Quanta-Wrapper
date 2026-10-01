@@ -24,7 +24,8 @@ def effective_model(model: ModelAlias) -> str | None:
     return None if upstream.lower() in ("", "default") else upstream
 
 
-def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_dir: str) -> Invocation:
+def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_dir: str,
+                     flags: frozenset[str] | None = None) -> Invocation:
     upstream = effective_model(model)
     if provider.adapter == "opencode" and not upstream:
         # OpenCode's own default is whatever the machine last used; on a clean install it picks an image
@@ -39,10 +40,11 @@ def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_d
                            "--system-prompt", "You are a helpful text-only assistant.", "--append-system-prompt", "",
                            *provider_args, *model_args], prompt, {"OMNIRUSH_OFFLINE": "1"})
     if provider.adapter == "opencode":
-        # opencode v2 `run` has no --pure/--dir flags: `opencode run --model
-        # <id>` reads the prompt from stdin and uses cwd as the project
-        # directory (the runner isolates cwd per request; see runner.py).
-        return Invocation(["run", *extra, *model_args], prompt)
+        # The prompt goes over stdin and cwd is the project directory (the runner isolates it per
+        # request, so --dir is never needed). OpenCode 1.x offers --pure (skip external plugins);
+        # 2.x removed it. `flags` comes from `opencode run --help`; unknown means pass nothing optional.
+        pure = ["--pure"] if flags and "--pure" in flags else []
+        return Invocation(["run", *extra, *pure, *model_args], prompt)
     if provider.adapter == "cline":
         # Cline CLI rejects stdin prompts in JSON mode ("JSON output mode
         # requires a prompt argument or piped stdin"): the prompt must be a

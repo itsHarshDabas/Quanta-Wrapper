@@ -94,3 +94,19 @@ always exited 1 and the server exposed aliases that can only ever return
   diagnostics if Hermes hits this with short timeouts.
 - `Req.txt` is a `pip freeze` snapshot (fine as-is); fresh installs should keep using
   `pip install -e .[test]` per the README quickstart.
+
+## Follow-up: global fix (flag detection)
+
+The diagnosis above is correct: OpenCode **2.x** removed `--pure` and `--dir`, while **1.x** still has them.
+Removing `--pure` for everyone would silently drop plugin isolation for 1.x users, so the adapter now asks
+the installed CLI instead of assuming a version:
+
+- `quanta/probe.py` runs `opencode run --help` once (with the CLI's own environment, cached per binary) and
+  parses the `--flags` it lists. A failed probe is never cached and means "unknown", so no optional flag is sent.
+- `quanta/adapters.py` adds `--pure` only when it is listed. `--dir` is never sent: the runner already sets
+  the working directory to the fresh per-request temp dir (kept from the fix above; it works for every version).
+- `quanta/runner.py` creates that temp dir only after the CLI has been resolved, so a missing CLI
+  (`503 cli_unavailable`) can no longer leak a directory.
+- `tests/fixtures/fake_opencode.py` emulates 1.x and 2.x (rejecting unknown flags like the real 2.x does);
+  `tests/test_opencode_compat.py` runs both end to end. Verified live on OpenCode 1.18.33 as well.
+- If another CLI renames a flag, the failure now reads `Unrecognized flag: ... ` in the server console.
