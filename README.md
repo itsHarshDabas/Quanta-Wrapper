@@ -192,7 +192,9 @@ claude
 - `502 cli_failed` — the CLI exited with an error. The server console now logs `detail='exit code N: ...'`
   (redacted, never sent to API clients). To see it directly:
   `quanta chat --provider opencode --model <id> "hi"`. Typical causes: a model id that is not in
-  `opencode models` for that machine (free models rotate), not logged in, or an older CLI missing `--pure`.
+  `opencode models` for that machine (free models rotate), or not logged in. OpenCode runs each
+  request in a fresh empty directory (never the wrapper checkout), because running it inside a
+  large repo can fail with `Instruction initialization blocked by unavailable sources`.
 - `504 cli_timeout` — raise `timeoutMs`; the process tree is already killed.
 
 ## Live checks
@@ -226,7 +228,7 @@ FreeBuff has no headless interface (verified: `--help` lists only `login`, `--co
 | Client | Adapter | Invocation | Status |
 | --- | --- | --- | --- |
 | OmniRush | `omnirush` | `omnirush --print --mode json ...` (stdin prompt, tools off) | wiring OK; needs CLI login |
-| Opencode | `opencode` | `opencode run --pure --dir <ws> --model <id>` (stdin prompt, plain text) | working (tested `opencode/muse-spark-1.3-contributor-free`) |
+| Opencode | `opencode` | `opencode run --model <id>` (stdin prompt, plain text; isolated cwd) | working (tested `opencode/muse-spark-1.3-contributor-free`) |
 | Cline | `cline` | `cline <prompt> --json --plan --auto-approve false ...` | wiring OK; needs Cline re-auth |
 | Antigravity | `antigravity` | `agy --input-format stream-json --output-format stream-json ...` | handshake OK; needs deny permissions + `acknowledgeAgentRisk` |
 | FreeBuff | `freebuff` | none — interactive TUI only (no prompt/JSON mode) | blocked by design; use `custom` bridge |

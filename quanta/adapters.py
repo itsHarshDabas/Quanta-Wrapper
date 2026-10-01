@@ -39,8 +39,10 @@ def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_d
                            "--system-prompt", "You are a helpful text-only assistant.", "--append-system-prompt", "",
                            *provider_args, *model_args], prompt, {"OMNIRUSH_OFFLINE": "1"})
     if provider.adapter == "opencode":
-        return Invocation(["run", *extra, "--pure", "--dir", provider.workspace,
-                           *model_args], prompt)
+        # opencode v2 `run` has no --pure/--dir flags: `opencode run --model
+        # <id>` reads the prompt from stdin and uses cwd as the project
+        # directory (the runner isolates cwd per request; see runner.py).
+        return Invocation(["run", *extra, *model_args], prompt)
     if provider.adapter == "cline":
         # Cline CLI rejects stdin prompts in JSON mode ("JSON output mode
         # requires a prompt argument or piped stdin"): the prompt must be a
