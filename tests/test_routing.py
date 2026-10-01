@@ -86,6 +86,22 @@ class AdHocRoutingTests(unittest.TestCase):
         self.assertEqual(ask(client, headers, "opencode-opencode-x").status_code, 200)
 
 
+class PreflightTests(unittest.TestCase):
+    def test_cors_preflight_has_no_body(self):
+        """Regression: a 204 carrying a body crashed older Starlette/h11 ("Too much data for declared Content-Length")."""
+        raw = example_config()
+        raw["server"]["apiKey"] = "test-" + "k" * 24
+        raw["server"]["corsOrigins"] = ["http://127.0.0.1:8788"]
+        client = TestClient(create_app(validate_config(raw, env={}), runner=lambda *a, **k: None), raise_server_exceptions=False)
+        response = client.options("/v1/models", headers={"Origin": "http://127.0.0.1:8788", "Access-Control-Request-Method": "GET"})
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.content, b"")
+        self.assertEqual(response.headers["access-control-allow-origin"], "http://127.0.0.1:8788")
+        self.assertIn("Authorization", response.headers["access-control-allow-headers"])
+        blocked = client.options("/v1/models", headers={"Origin": "http://evil.example"})
+        self.assertEqual(blocked.status_code, 403)
+
+
 class ProvidersEndpointTests(unittest.TestCase):
     def test_lists_capabilities_honestly(self):
         _, client, headers, _ = build(enabled=("omnirush",))

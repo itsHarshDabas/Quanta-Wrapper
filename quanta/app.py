@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Awaitable, Callable
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Configuration
@@ -145,7 +145,7 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
         if origin and origin not in config.server.cors_origins:
             response = JSONResponse(ApiError(403, "origin_not_allowed", "Browser origin is not allowed; configure server.corsOrigins.").body(), status_code=403)
         elif request.method == "OPTIONS":
-            response = JSONResponse(None, status_code=204, headers={"Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Max-Age": "600"})
+            response = Response(status_code=204, headers={"Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Max-Age": "600"})
         else:
             try:
                 request.state.cached_body = bytes(body_bytes)
