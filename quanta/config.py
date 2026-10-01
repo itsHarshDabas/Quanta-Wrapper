@@ -87,7 +87,8 @@ def example_config() -> dict:
             "antigravity": {"adapter": "antigravity", "enabled": False, "command": "agy", "acknowledgeAgentRisk": False},
             "freebuff": {"adapter": "freebuff", "enabled": False, "command": "freebuff"},
         },
-        "models": [{"id": name, "provider": name} for name in ("omnirush", "opencode", "cline", "antigravity", "freebuff")],
+        "models": [{"id": name, "provider": name, **({"upstreamModel": "opencode/big-pickle"} if name == "opencode" else {})}
+                   for name in ("omnirush", "opencode", "cline", "antigravity", "freebuff")],
     }
 
 

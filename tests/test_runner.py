@@ -62,6 +62,23 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
                     await run_cli(self.provider(mode, max_output_bytes=1024), self.model, "hi")
                 self.assertEqual(error.exception.code, code)
                 self.assertNotIn("PRIVATE-CREDENTIAL", str(error.exception))
+                self.assertNotIn("PRIVATE-CREDENTIAL", json.dumps(error.exception.body()))  # never in the HTTP body
+
+    async def test_cli_failure_detail_is_operator_only_and_redacted(self):
+        with self.assertRaises(ApiError) as error:
+            await run_cli(self.provider("fail"), self.model, "hi")
+        self.assertIn("exit code 7", error.exception.detail)
+        self.assertIn("PRIVATE-CREDENTIAL", error.exception.detail)  # visible to the operator's console only
+        from quanta.runner import diagnostic_tail
+
+        noisy = b"\x1b[31merror\x1b[0m: Authorization: Bearer abc123SECRETvalue and sk-live_ABCDEFGH1234 plus " + b"A" * 40
+        cleaned = diagnostic_tail(noisy)
+        self.assertNotIn("abc123SECRETvalue", cleaned)
+        self.assertNotIn("sk-live_ABCDEFGH1234", cleaned)
+        self.assertNotIn("A" * 32, cleaned)
+        self.assertNotIn("\x1b", cleaned)
+        self.assertEqual(len(diagnostic_tail(b"x " * 2000)), 500)
+        self.assertEqual(diagnostic_tail(b"", b"from stdout"), "from stdout")  # falls back to stdout
 
     async def test_timeout_and_cancellation(self):
         started = time.monotonic()

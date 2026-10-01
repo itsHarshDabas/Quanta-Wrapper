@@ -129,6 +129,13 @@ class AdapterTests(unittest.TestCase):
         invocation = build_invocation(self.provider("cline"), ModelAlias(id="a", provider="cline", upstream_model="default"), "hi", "/tmp")
         self.assertNotIn("--model", invocation.args)
 
+    def test_opencode_without_a_model_gets_a_usable_default(self):
+        for upstream in (None, "default"):
+            invocation = build_invocation(self.provider("opencode"), ModelAlias(id="a", provider="opencode", upstream_model=upstream), "hi", "/tmp")
+            self.assertEqual(invocation.args[invocation.args.index("--model") + 1], "opencode/big-pickle")
+        explicit = build_invocation(self.provider("opencode"), ModelAlias(id="a", provider="opencode", upstream_model="opencode/x"), "hi", "/tmp")
+        self.assertEqual(explicit.args[explicit.args.index("--model") + 1], "opencode/x")
+
     def test_cline_uses_its_own_credentials_dir(self):
         invocation = build_invocation(self.provider("cline"), ModelAlias(id="a", provider="cline", upstream_model="m"), "hi", "/tmp/x")
         self.assertNotIn("--data-dir", invocation.args)

@@ -15,6 +15,9 @@ class Invocation:
     env: dict[str, str] = field(default_factory=dict)
 
 
+OPENCODE_DEFAULT_MODEL = "opencode/big-pickle"
+
+
 def effective_model(model: ModelAlias) -> str | None:
     """Upstream model id, or None to use the CLI's own configured default."""
     upstream = (model.upstream_model or "").strip()
@@ -23,6 +26,10 @@ def effective_model(model: ModelAlias) -> str | None:
 
 def build_invocation(provider: Provider, model: ModelAlias, prompt: str, state_dir: str) -> Invocation:
     upstream = effective_model(model)
+    if provider.adapter == "opencode" and not upstream:
+        # OpenCode's own default is whatever the machine last used; on a clean install it picks an image
+        # model (google/gemini-3-pro-image-preview) and fails "User not found". Use its free tier instead.
+        upstream = OPENCODE_DEFAULT_MODEL
     model_args = ["--model", upstream] if upstream else []
     provider_args = ["--provider", model.upstream_provider] if model.upstream_provider else []
     extra = provider.args

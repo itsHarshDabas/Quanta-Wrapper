@@ -1,6 +1,8 @@
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str, param: str | None = None):
+    def __init__(self, status: int, code: str, message: str, param: str | None = None, detail: str | None = None):
         super().__init__(message)
+        # Operator-only diagnostics (server console / `quanta chat`); never part of the HTTP body.
+        self.detail = detail
         self.status = status
         self.code = code
         self.message = message

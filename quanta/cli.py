@@ -108,8 +108,15 @@ def main():
             model = selected.exposed_models()[0]
             provider = selected.providers[model.provider]
             print(f"Running {model.id!r} via {model.provider} ...")
-            result = asyncio.run(run_cli(provider, model, format_prompt(validate_request(
-                {"model": model.id, "messages": [{"role": "user", "content": prompt}]}))))
+            from .errors import ApiError
+            try:
+                result = asyncio.run(run_cli(provider, model, format_prompt(validate_request(
+                    {"model": model.id, "messages": [{"role": "user", "content": prompt}]}))))
+            except ApiError as error:
+                print(f"Error ({error.code}): {error.message}")
+                if error.detail:
+                    print(f"CLI output: {error.detail}")
+                raise SystemExit(1)
             print(result.text)
             return
         interactive = stdin_is_interactive()

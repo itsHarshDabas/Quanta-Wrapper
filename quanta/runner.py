@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -21,6 +22,22 @@ from .errors import ApiError
 class RunResult:
     text: str
     usage: dict | None = None
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_SECRET = re.compile(r"(?i)(bearer\s+\S+|(?:sk|gaw|quanta|key|token)[-_][A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{32,})")
+
+
+def diagnostic_tail(stderr: bytes, stdout: bytes = b"", limit: int = 500) -> str:
+    """Short, redacted tail of a failed CLI's output for the operator's console.
+
+    Never sent to API clients: stderr can contain prompts and credentials. Long tokens and
+    key-looking strings are masked, colour codes removed and the text truncated.
+    """
+    raw = stderr if stderr.strip() else stdout
+    text = _ANSI.sub("", raw.decode("utf-8", "replace"))
+    text = _SECRET.sub("[redacted]", " ".join(text.split()))
+    return text[-limit:]
 
 
 async def terminate_tree(process: asyncio.subprocess.Process):
@@ -98,6 +115,8 @@ async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
             utf8 = codecs.getincrementaldecoder("utf-8")("strict")
             while chunk := await process.stdout.read(16384):
                 count(chunk)
+                stdout_tail.extend(chunk)
+                del stdout_tail[:-4096]
                 for text in decoder.feed(utf8.decode(chunk)):
                     if on_text:
                         await on_text(text)
@@ -105,10 +124,15 @@ async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
                 if on_text:
                     await on_text(text)
 
+        stderr_tail = bytearray()
+        stdout_tail = bytearray()
+
         async def diagnostics():
             while chunk := await process.stderr.read(16384):
                 count(chunk)
-            # Never return or log stderr: it can contain prompts and credentials.
+                stderr_tail.extend(chunk)
+                del stderr_tail[:-4096]
+            # The tail is only used for the operator-facing `detail` below, never in API responses.
 
         async def input_data():
             try:
@@ -131,7 +155,8 @@ async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
             tasks = [asyncio.create_task(coro) for coro in (input_data(), output(), diagnostics(), process.wait())]
             await asyncio.gather(*tasks)
             if process.returncode != 0:
-                raise ApiError(502, "cli_failed", "CLI exited unsuccessfully. Check login, model configuration and permissions locally.")
+                raise ApiError(502, "cli_failed", "CLI exited unsuccessfully. Check login, model configuration and permissions locally.",
+                               detail=f"exit code {process.returncode}: {diagnostic_tail(bytes(stderr_tail), bytes(stdout_tail))}")
             for text in decoder.finish():
                 if on_text:
                     await on_text(text)

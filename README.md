@@ -189,6 +189,10 @@ claude
 - `401 invalid_api_key` — wrong Bearer key. `403 origin_not_allowed` — add the browser origin to `corsOrigins`.
 - `404 model_not_found` — provider disabled/unknown; see `GET /v1/providers`.
 - `502 cli_reported_error ... Upstream: ...` — the CLI's own error (login, quota, unavailable service).
+- `502 cli_failed` — the CLI exited with an error. The server console now logs `detail='exit code N: ...'`
+  (redacted, never sent to API clients). To see it directly:
+  `quanta chat --provider opencode --model <id> "hi"`. Typical causes: a model id that is not in
+  `opencode models` for that machine (free models rotate), not logged in, or an older CLI missing `--pure`.
 - `504 cli_timeout` — raise `timeoutMs`; the process tree is already killed.
 
 ## Live checks

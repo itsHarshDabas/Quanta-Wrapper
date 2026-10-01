@@ -377,7 +377,8 @@ def create_app(config: Configuration, runner: Callable[..., Awaitable[RunResult]
                 raise
             except ApiError as error:
                 outcome.update(status=error.status, code=error.code)
-                log.warning("request=%s model=%s code=%s", request.state.request_id, model.id, error.code)
+                log.warning("request=%s model=%s code=%s%s", request.state.request_id, model.id, error.code,
+                            f" detail={error.detail!r}" if error.detail else "")
                 await queue.put(("error", error))
             except Exception:
                 outcome.update(status=500, code="internal_error")
