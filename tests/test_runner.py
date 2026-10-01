@@ -140,6 +140,20 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(result["cwd"]), Path(self.temp.name))
         self.assertEqual(result["pwd"], self.temp.name)
 
+    async def test_opencode_runs_in_isolated_directory(self):
+        from quanta.commands import ResolvedCommand
+
+        # OpenCode loads project context from cwd, so the runner isolates it in
+        # a fresh per-request temp dir instead of the shared workspace.
+        provider = Provider(adapter="opencode", command="opencode", enabled=True,
+                            workspace=self.temp.name)
+        with patch("quanta.runner.resolve_command",
+                   return_value=ResolvedCommand(sys.executable, (FIXTURE, "env"))):
+            result = await run_cli(provider, self.model, "hi")
+        reported = json.loads(result.text)
+        self.assertNotEqual(Path(reported["cwd"]), Path(self.temp.name))
+        self.assertEqual(reported["pwd"], reported["cwd"])
+
 
 class DecoderTests(unittest.TestCase):
     def decode(self, mode, events):
@@ -169,11 +183,13 @@ class DecoderTests(unittest.TestCase):
         invocation = build_invocation(Provider(adapter="opencode", command="opencode"),
                                       ModelAlias(id="t", provider="p", upstream_model="opencode/free-model"),
                                       "PROMPT", "state")
-        # Plain `run --pure`: prompt goes over stdin, no JSON envelope, no
-        # OPENCODE_CONFIG_CONTENT (opencode 1.18+ treats that as outside
-        # OpenCode and 403s the free tier) and no custom --agent.
+        # Plain `run --model <id>`: prompt goes over stdin, no JSON envelope,
+        # no custom --agent. opencode v2 has no --pure/--dir flags, and cwd is
+        # isolated per request by the runner (see run_cli).
         self.assertEqual(invocation.stdin, "PROMPT")
-        self.assertIn("--pure", invocation.args)
+        self.assertEqual(invocation.args[:1], ["run"])
+        self.assertNotIn("--pure", invocation.args)
+        self.assertNotIn("--dir", invocation.args)
         self.assertNotIn("--format", invocation.args)
         self.assertNotIn("--agent", invocation.args)
         self.assertNotIn("PROMPT", invocation.args)

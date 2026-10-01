@@ -77,14 +77,21 @@ async def terminate_tree(process: asyncio.subprocess.Process):
 async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
                   on_text: Callable[[str], Awaitable[None]] | None = None,
                   secret_env: str = "QUANTA_API_KEY") -> RunResult:
-    env = {**os.environ, **provider.env, "PWD": provider.workspace, "NO_COLOR": "1", "FORCE_COLOR": "0", "TERM": "dumb"}
+    Path(provider.workspace).mkdir(parents=True, exist_ok=True)
+    state_dir = tempfile.mkdtemp(prefix="quanta-")
+    # OpenCode treats cwd as its project directory and loads project
+    # context/instructions from it (walking up to the enclosing repo). Running
+    # inside the wrapper's own checkout poisons it ("Instruction
+    # initialization blocked by unavailable sources: core/instructions"), and
+    # would also expose wrapper sources to the model, so OpenCode runs in the
+    # fresh empty per-request directory instead of the shared workspace.
+    cwd = state_dir if provider.adapter == "opencode" else provider.workspace
+    env = {**os.environ, **provider.env, "PWD": cwd, "NO_COLOR": "1", "FORCE_COLOR": "0", "TERM": "dumb"}
     env.pop(secret_env, None)
     try:
         resolved = resolve_command(provider.command, env)
     except (ValueError, OSError):
         raise ApiError(503, "cli_unavailable", "CLI executable is unavailable. Run quanta doctor on the server.") from None
-    Path(provider.workspace).mkdir(parents=True, exist_ok=True)
-    state_dir = tempfile.mkdtemp(prefix="quanta-")
     process = None
     tasks: list[asyncio.Task] = []
     try:
@@ -148,7 +155,7 @@ async def run_cli(provider: Provider, model: ModelAlias, prompt: str, *,
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
         async with asyncio.timeout(provider.timeout_ms / 1000):
             try:
-                process = await asyncio.create_subprocess_exec(*args, cwd=provider.workspace,
+                process = await asyncio.create_subprocess_exec(*args, cwd=cwd,
                     env={**env, **invocation.env}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
             except (OSError, ValueError):
                 raise ApiError(503, "cli_unavailable", "Unable to start the CLI. Check installation and server permissions.") from None
